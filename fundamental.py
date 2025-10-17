@@ -39,10 +39,19 @@ def get_fundamentals(tickers):
         try:
             stock = yf.Ticker(ticker)
             info = stock.info
+
+            current_price = info.get("currentPrice", np.nan)
+            eps = info.get("trailingEps", np.nan)
+            pe_ratio = info.get("trailingPE", np.nan)
+
+            # ✅ If P/E ratio is missing, calculate it manually
+            if (pd.isna(pe_ratio) or pe_ratio == 0) and pd.notna(current_price) and pd.notna(eps) and eps != 0:
+                pe_ratio = current_price / eps
+
             data[ticker] = {
-                "current_price": info.get("currentPrice", np.nan),
-                "eps": info.get("trailingEps", np.nan),
-                "pe_ratio": info.get("trailingPE", np.nan),
+                "current_price": current_price,
+                "eps": eps,
+                "pe_ratio": pe_ratio,
                 "book_value": info.get("bookValue", np.nan),
                 "pb_ratio": info.get("priceToBook", np.nan),
                 "dividend_yield": (info.get("dividendYield", 0) or 0),
