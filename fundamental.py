@@ -154,10 +154,19 @@ st.dataframe(valuation_df.style.format("{:.2f}"))
 # -------------------------------
 st.subheader("3️⃣ Fair Value vs Market Price Comparison")
 
+# Melt the valuation_df for better plotting
+plot_df = valuation_df[["Current Price", "DCF Value", "DDM Value", "Relative Value"]].copy()
+plot_df = plot_df.reset_index().melt(id_vars="index", var_name="Metric", value_name="Value")
+plot_df.rename(columns={"index": "Ticker"}, inplace=True)
+
 fig, ax = plt.subplots(figsize=(10, 6))
-valuation_df[["Current Price", "Average Fair Value"]].plot(kind="bar", ax=ax)
-plt.title("Fundamental Fair Value vs Market Price")
-plt.ylabel("Price (Local Currency)")
-plt.xticks(rotation=0)
+for metric in ["Current Price", "DCF Value", "DDM Value", "Relative Value"]:
+    subset = plot_df[plot_df["Metric"] == metric]
+    ax.bar(subset["Ticker"], subset["Value"], label=metric, alpha=0.7)
+
+ax.set_title("Fair Value Comparison by Model")
+ax.set_ylabel("Price (Local Currency)")
+ax.legend()
 plt.grid(True)
 st.pyplot(fig)
+
