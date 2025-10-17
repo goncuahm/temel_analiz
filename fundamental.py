@@ -154,19 +154,31 @@ st.dataframe(valuation_df.style.format("{:.2f}"))
 # -------------------------------
 st.subheader("3️⃣ Fair Value vs Market Price Comparison")
 
-# Melt the valuation_df for better plotting
+# Prepare data for grouped bar chart
 plot_df = valuation_df[["Current Price", "DCF Value", "DDM Value", "Relative Value"]].copy()
-plot_df = plot_df.reset_index().melt(id_vars="index", var_name="Metric", value_name="Value")
-plot_df.rename(columns={"index": "Ticker"}, inplace=True)
+tickers = plot_df.index.tolist()
+metrics = plot_df.columns.tolist()
+num_metrics = len(metrics)
+
+x = np.arange(len(tickers))  # the label locations
+width = 0.2  # width of each bar
 
 fig, ax = plt.subplots(figsize=(10, 6))
-for metric in ["Current Price", "DCF Value", "DDM Value", "Relative Value"]:
-    subset = plot_df[plot_df["Metric"] == metric]
-    ax.bar(subset["Ticker"], subset["Value"], label=metric, alpha=0.7)
+
+# Plot each valuation metric side by side
+for i, metric in enumerate(metrics):
+    ax.bar(x + i * width - width * (num_metrics - 1) / 2,
+           plot_df[metric],
+           width,
+           label=metric)
 
 ax.set_title("Fair Value Comparison by Model")
 ax.set_ylabel("Price (Local Currency)")
+ax.set_xticks(x)
+ax.set_xticklabels(tickers, rotation=0)
 ax.legend()
-plt.grid(True)
+ax.grid(True, axis='y', linestyle='--', alpha=0.7)
+
 st.pyplot(fig)
+
 
