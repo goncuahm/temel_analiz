@@ -45,7 +45,7 @@ def get_fundamentals(tickers):
                 "pe_ratio": info.get("trailingPE", np.nan),
                 "book_value": info.get("bookValue", np.nan),
                 "pb_ratio": info.get("priceToBook", np.nan),
-                "dividend_yield": (info.get("dividendYield", 0) or 0) * 100,
+                "dividend_yield": (info.get("dividendYield", 0) or 0),
                 "beta": info.get("beta", 1.0),
                 "roe": info.get("returnOnEquity", np.nan),
                 "revenue_growth": info.get("revenueGrowth", 0.05),
