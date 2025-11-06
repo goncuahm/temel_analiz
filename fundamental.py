@@ -89,7 +89,7 @@ def gordon_growth_model(dividend, required_return, growth_rate):
         return np.nan
     return dividend * (1 + growth_rate) / (required_return - growth_rate)
 
-
+ 
 def relative_valuation(eps, peer_pe, book_value, peer_pb):
     """Estimate value using peer P/E and P/B averages."""
     pe_value = eps * peer_pe
