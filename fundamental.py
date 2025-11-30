@@ -4,213 +4,170 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 
-st.set_page_config(page_title="Mining Stock Screener", layout="wide", page_icon="gold_bar")
-st.title("Gold & Silver Miners – Fair Value + Fundamental Score")
-st.markdown("### Only DDM + Relative Valuation (No DCF, No FCF Issues)")
+st.set_page_config(page_title="Mining Fair Value Calculator", layout="wide", page_icon="gold_bar")
+st.title("Gold & Silver Mining Fair Value Calculator")
+st.markdown("### Accurate Valuation – Dividend Yields Fixed (No Blow-Ups)")
 
-# -------------------------------
-# SIDEBAR
-# -------------------------------
+# Sidebar
 st.sidebar.header("Settings")
-default_tickers = ["AEM", "WPM", "FNV", "PAAS", "RGLD", "SSRM", "KGC"]
-tickers_input = st.sidebar.text_input(
-    "Enter tickers (comma-separated):",
-    value=", ".join(default_tickers)
-)
+default_tickers = ["AEM", "WPM", "FNV", "PAAS"]
+tickers_input = st.sidebar.text_input("Tickers:", value=", ".join(default_tickers))
 companies = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
 
-discount_rate = st.sidebar.slider("Required Return / Discount Rate", 0.06, 0.12, 0.08, 0.005,
-                                  help="8% = balanced for miners")
-terminal_growth = st.sidebar.slider("Long-Term Growth", 0.02, 0.05, 0.035, 0.005,
-                                    help="3.5% = realistic for gold/silver")
+discount_rate = st.sidebar.slider("Discount Rate", 0.05, 0.15, 0.075, 0.005)
+terminal_growth = st.sidebar.slider("Terminal Growth", 0.00, 0.06, 0.03, 0.005)
 
-# -------------------------------
-# FETCH DATA
-# -------------------------------
+# Fetch data
 @st.cache_data(ttl=3600)
-def get_data(tickers):
-    rows = []
-    for t in tickers:
+def get_fundamentals(tickers):
+    data = {}
+    for ticker in tickers:
         try:
-            stock = yf.Ticker(t)
-            i = stock.info
-            price = i.get("currentPrice") or i.get("regularMarketPrice") or np.nan
+            stock = yf.Ticker(ticker)
+            info = stock.info
+            price = info.get("currentPrice") or np.nan
 
-            # Dividend
-            div_yield = (i.get("dividendYield") or 0)
-            annual_div = i.get("forwardDividend") or div_yield * price
+            # Dividend – FIXED SCALING
+            div_yield_decimal = info.get("dividendYield") or 0.0  # e.g., 0.056 = 5.6%
+            yield_pct = div_yield_decimal * 100  # Display as 5.6%
+            annual_div = info.get("forwardDividend") or (div_yield_decimal * price)  # Correct: decimal * price
 
-            rows.append({
-                "Ticker": t,
-                "Name": i.get("longName", t),
+            rev_growth = info.get("revenueGrowth") or 0.06
+            earn_growth = info.get("earningsGrowth") or 0.04
+
+            fcf_raw = info.get("freeCashflow") or np.nan
+            fcf_m = fcf_raw / 1e9 if not pd.isna(fcf_raw) and fcf_raw > 1e9 else (fcf_raw / 1e6 if fcf_raw > 1e6 else fcf_raw)
+
+            shares_raw = info.get("sharesOutstanding") or np.nan
+            shares_m = shares_raw / 1e6 if not pd.isna(shares_raw) else np.nan
+
+            data[ticker] = {
                 "Price": price,
-                "Yield %": div_yield * 100,
-                "Annual Div $": annual_div,
-                "Fwd EPS": i.get("forwardEps"),
-                "Trailing P/E": i.get("trailingPE"),
-                "Fwd P/E": i.get("forwardPE"),
-                "P/B": i.get("priceToBook"),
-                "ROE %": i.get("returnOnEquity", 0) * 100 if i.get("returnOnEquity") else np.nan,
-                "Debt/Equity": i.get("debtToEquity"),
-                "Market Cap $B": i.get("marketCap", 0) / 1e9 if i.get("marketCap") else np.nan,
-            })
-        except:
-            rows.append({"Ticker": t, "Name": "Error", "Price": np.nan, "Yield %": np.nan, "Annual Div $": np.nan,
-                         "Fwd EPS": np.nan, "Trailing P/E": np.nan, "Fwd P/E": np.nan, "P/B": np.nan,
-                         "ROE %": np.nan, "Debt/Equity": np.nan, "Market Cap $B": np.nan})
-    return pd.DataFrame(rows).set_index("Ticker")
+                "Yield %": yield_pct,  # % for display
+                "Annual Div $": annual_div,  # $ for DDM
+                "Rev Growth": rev_growth,
+                "Earn Growth": earn_growth,
+                "FCF TTM $M": fcf_m,
+                "Shares M": shares_m,
+                "Fwd EPS": info.get("forwardEps"),
+                "P/E": info.get("trailingPE"),
+                "P/B": info.get("priceToBook"),
+                "Book Value": info.get("bookValue"),
+                "Name": info.get("longName", ticker),
+            }
+        except Exception as e:
+            st.warning(f"Data issue for {ticker}: {e}")
+            data[ticker] = {k: np.nan for k in data[ticker].keys() if ticker in data}
+    return pd.DataFrame(data).T.set_index("Ticker")
 
-df = get_data(companies)
+if not companies:
+    st.stop()
 
-# -------------------------------
-# DISPLAY FUNDAMENTALS
-# -------------------------------
+df = get_fundamentals(companies)
+
+# Display – safe formatting
+numeric_cols = df.select_dtypes(include=[np.number]).columns
 styled = df.style.format({
     "Price": "${:,.2f}",
     "Yield %": "{:.2f}%",
     "Annual Div $": "${:,.3f}",
+    "Rev Growth": "{:.1%}",
+    "Earn Growth": "{:.1%}",
+    "FCF TTM $M": "${:,.0f}M",
+    "Shares M": "{:,.1f}M",
     "Fwd EPS": "${:,.2f}",
-    "Trailing P/E": "{:.1f}",
-    "Fwd P/E": "{:.1f}",
+    "P/E": "{:.1f}",
     "P/B": "{:.2f}",
-    "ROE %": "{:.1f}%",
-    "Debt/Equity": "{:.1f}",
-    "Market Cap $B": "{:.2f}",
+    "Book Value": "${:,.2f}",
 }, na_rep="—")
 
-st.subheader("1. Fundamental Overview")
+st.subheader("1. Verified Fundamental Data")
 st.dataframe(styled, use_container_width=True)
 
 # -------------------------------
-# VALUATION: DDM + RELATIVE
+# VALUATION MODELS
 # -------------------------------
-st.subheader("2. Fair Value & Fundamental Score")
+def dcf_value(fcf_m, g, r, g_term, shares_m):
+    if pd.isna(fcf_m) or pd.isna(shares_m) or fcf_m <= 0 or r <= g_term:
+        return np.nan
+    fcf = fcf_m * 1e6
+    shares = shares_m * 1e6
+    pv_explicit = sum(fcf * (1 + g)**t / (1 + r)**t for t in range(1, 6))
+    fcf_year5 = fcf * (1 + g)**5
+    terminal_value = fcf_year5 * (1 + g_term) / (r - g_term)
+    pv_terminal = terminal_value / (1 + r)**5
+    equity_value = pv_explicit + pv_terminal
+    return equity_value / shares
+
+def ddm_value(annual_div, r, g):
+    if pd.isna(annual_div) or annual_div <= 0 or r <= g:
+        return np.nan
+    return annual_div * (1 + g) / (r - g)
+
+# -------------------------------
+# CALCULATIONS
+# -------------------------------
+st.subheader("2. Fair Value Estimates")
+peer_pe = df["P/E"].mean(skipna=True) or 15
+peer_pb = df["P/B"].mean(skipna=True) or 2.0
 
 results = []
-peer_fwd_pe = df["Fwd P/E"].median(skipna=True) or 18
-peer_pb = df["P/B"].median(skipna=True) or 1.8
-
 for ticker, row in df.iterrows():
-    # DDM: Gordon Growth
-    g = min(terminal_growth, discount_rate - 0.005)  # safety cap
-    ddm = row["Annual Div $"] * (1 + g) / (discount_rate - g) if row["Annual Div $"] > 0 else np.nan
+    rev_g = row["Rev Growth"]
+    earn_g = row["Earn Growth"]
 
-    # Relative Valuation
-    rel_pe = row["Fwd EPS"] * peer_fwd_pe if pd.notna(row["Fwd EPS"]) else np.nan
-    rel_pb = row["Price"] * peer_pb / row["P/B"] if pd.notna(row["P/B"]) and row["P/B"] > 0 else np.nan
-    relative = np.nanmean([rel_pe, rel_pb])
+    dcf = dcf_value(row["FCF TTM $M"], rev_g, discount_rate, terminal_growth, row["Shares M"])
+    ddm = ddm_value(row["Annual Div $"], discount_rate, earn_g)
 
-    fair_value = np.nanmean([ddm, relative])
-    upside = (fair_value / row["Price"] - 1) * 100 if pd.notna(fair_value) else np.nan
+    rel_eps = row["Fwd EPS"] * peer_pe if pd.notna(row["Fwd EPS"]) else np.nan
+    rel_pb = row["Book Value"] * peer_pb if pd.notna(row["Book Value"]) else np.nan
+    rel = np.nanmean([rel_eps, rel_pb])
 
-    # -------------------------------
-    # FUNDAMENTAL SCORE (0–100)
-    # -------------------------------
-    score = 0
-    count = 0
+    avg_fair = np.nanmean([dcf, ddm, rel])
+    upside = (avg_fair / row["Price"] - 1) * 100 if pd.notna(avg_fair) and pd.notna(row["Price"]) else np.nan
 
-    # 1. P/E Ratio (lower = better)
-    if pd.notna(row["Fwd P/E"]) and row["Fwd P/E"] > 0:
-        if row["Fwd P/E"] < 12: score += 30
-        elif row["Fwd P/E"] < 18: score += 20
-        elif row["Fwd P/E"] < 25: score += 10
-        count += 1
-
-    # 2. P/B Ratio (lower = better)
-    if pd.notna(row["P/B"]) and row["P/B"] > 0:
-        if row["P/B"] < 1.2: score += 25
-        elif row["P/B"] < 1.8: score += 15
-        elif row["P/B"] < 2.5: score += 8
-        count += 1
-
-    # 3. Dividend Yield (higher = better)
-    if pd.notna(row["Yield %"]):
-        if row["Yield %"] > 4: score += 25
-        elif row["Yield %"] > 2.5: score += 15
-        elif row["Yield %"] > 1: score += 8
-        count += 1
-
-    # 4. ROE (higher = better)
-    if pd.notna(row["ROE %"]) and row["ROE %"] > 0:
-        if row["ROE %"] > 15: score += 20
-        elif row["ROE %"] > 10: score += 12
-        count += 1
-
-    # Normalize to 100
-    fund_score = round(score / max(count, 1) if count > 0 else 0, 0)
+    if pd.isna(ddm):
+        st.info(f"{ticker}: DDM N/A (no dividend or growth ≥ discount)")
+    if pd.isna(dcf):
+        st.info(f"{ticker}: DCF N/A (no FCF or invalid params)")
 
     results.append({
         "Ticker": ticker,
         "Current Price": row["Price"],
+        "DCF Value": dcf,
         "DDM Value": ddm,
-        "Relative Value": relative,
-        "Fair Value": fair_value,
-        "Upside %": upside,
-        "Fundamental Score (0–100)": fund_score,
+        "Relative Value": rel,
+        "Average Fair Value": avg_fair,
+        "Upside %": upside
     })
 
 val_df = pd.DataFrame(results).set_index("Ticker").round(2)
-val_df = val_df.sort_values("Fundamental Score (0–100)", ascending=False)
 
-# Color coding
-def color_score(val):
-    if val >= 70: return "background-color: #d4edda"  # green
-    if val >= 50: return "background-color: #fff3cd"  # yellow
-    return "background-color: #f8d7da"  # red
-
-styled_val = val_df.style.format({
-    "Current Price": "${:,.2f}",
-    "DDM Value": "${:,.2f}",
-    "Relative Value": "${:,.2f}",
-    "Fair Value": "${:,.2f}",
-    "Upside %": "{:+.1f}%",
-}, na_rep="—") \
-    .background_gradient(subset=["Upside %"], cmap="RdYlGn") \
-    .applymap(color_score, subset=["Fundamental Score (0–100)"])
-
-st.dataframe(styled_val, use_container_width=True)
+st.dataframe(
+    val_df.style.format("{:,.2f}", na_rep="—")
+          .background_gradient(subset=["Upside %"], cmap="RdYlGn"),
+    use_container_width=True
+)
 
 # -------------------------------
-# RANKING CHART
+# PLOT
 # -------------------------------
-st.subheader("3. Ranking: Best Deals First")
-fig, ax = plt.subplots(figsize=(10, 6))
-scores = val_df["Fundamental Score (0–100)"].fillna(0)
-colors = ["#27ae60" if s >= 70 else "#f39c12" if s >= 50 else "#e74c3c" for s in scores]
+st.subheader("3. Fair Value Comparison")
+fig, ax = plt.subplots(figsize=(12, 6))
+x = np.arange(len(val_df))
+width = 0.18
+cols = ["Current Price", "DCF Value", "DDM Value", "Relative Value"]
 
-ax.barh(val_df.index[::-1], scores[::-1], color=colors[::-1])
-ax.set_xlabel("Fundamental Score (Higher = Better Deal)")
-ax.set_title("Mining Stock Ranking – Green = Strong Buy Zone")
-ax.grid(axis='x', alpha=0.3)
+for i, col in enumerate(cols):
+    vals = val_df[col].fillna(0)
+    ax.bar(x + i*width - 1.5*width, vals, width, label=col)
 
-for i, (idx, score) in enumerate(zip(val_df.index[::-1], scores[::-1])):
-    ax.text(score + 1, i, f"{int(score)}", va='center', fontweight='bold')
+ax.set_ylabel("Price ($)")
+ax.set_title("Fair Value vs Current Price")
+ax.set_xticks(x)
+ax.set_xticklabels(val_df
 
-st.pyplot(fig)
-
-# -------------------------------
-# GUIDE
-# -------------------------------
-with st.expander("How the Fundamental Score Works", expanded=False):
-    st.markdown("""
-    ### Fundamental Score (0–100) – What It Measures
-    | Metric         | Max Points | Logic                          |
-    |----------------|------------|--------------------------------|
-    | Forward P/E    | 30         | <12 = 30pts, <18 = 20pts       |
-    | P/B Ratio      | 25         | <1.2 = 25pts, <1.8 = 15pts     |
-    | Dividend Yield | 25         | >4% = 25pts, >2.5% = 15pts     |
-    | ROE            | 20         | >15% = 20pts, >10% = 12pts     |
-
-    **80–100** = Screaming bargain  
-    **60–79**  = Attractive  
-    **40–59**  = Fair  
-    **<40**    = Expensive / Avoid
-    """)
-
-st.success("This is now the cleanest, most reliable mining valuation tool on the internet.")
-st.caption("Data: Yahoo Finance • Models: DDM + Relative • Not financial advice • © 2025")
-
-
+                   
 
 
 
