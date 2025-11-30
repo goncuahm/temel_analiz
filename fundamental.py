@@ -6,24 +6,40 @@ import matplotlib.pyplot as plt
 
 st.set_page_config(page_title="Mining Value + RSI Screener", layout="wide", page_icon="gold_bar")
 st.title("Gold & Silver Miners – Value + RSI + Debt Safety")
-st.markdown("**Pure trailing valuation • RSI • Debt-aware Fundamental Score**")
+st.markdown("**Pure trailing metrics • RSI • Debt-aware Fundamental Score**")
 
 # -------------------------------
-# STOCK SELECTION
+# STOCK SELECTION – NOW WITH MANUAL ENTRY
 # -------------------------------
-all_miners = ["AEM","NEM","WPM","GOLD","FNV","PAAS","KGC","SSRM","RGLD","HL","CDE","SAND","OR","EXK","AGI"]
+all_miners = ["AEM","NEM","GOLD","WPM","FNV","PAAS","KGC","SSRM","RGLD","HL","CDE","SAND","OR","EXK","AGI","BTG","HMY","IAG"]
 
-col1, col2 = st.columns([1, 3])
-with col1:
-    preset = st.selectbox("Quick List:", ["Top Producers", "Royalty", "All Miners"])
-    if preset == "Top Producers": default = ["AEM","NEM","GOLD","KGC","PAAS","SSRM"]
-    elif preset == "Royalty": default = ["WPM","FNV","RGLD","SAND","OR"]
-    else: default = all_miners[:10]
-with col2:
-    tickers = st.multiselect("Select stocks:", all_miners, default=default)
+# Manual ticker input box
+manual_input = st.text_input(
+    "Enter tickers manually (comma/space separated) → e.g. AEM PAAS WPM GOLD",
+    placeholder="AEM, PAAS, WPM, GOLD"
+)
+
+# Preset selection (only shown if no manual input)
+if not manual_input.strip():
+    col1, col2 = st.columns([1, 3])
+    with col1:
+        preset = st.selectbox("Quick List:", ["Top Producers", "Royalty", "All Miners"])
+        if preset == "Top Producers": default = ["AEM","NEM","GOLD","KGC","PAAS","SSRM"]
+        elif preset == "Royalty": default = ["WPM","FNV","RGLD","SAND","OR"]
+        else: default = all_miners[:10]
+    with col2:
+        selected = st.multiselect("Or pick from list:", all_miners, default=default)
+    tickers = selected
+else:
+    # Parse manual input
+    raw = manual_input.replace(",", " ").upper().split()
+    tickers = [t.strip() for t in raw if t.strip()]
 
 if not tickers:
+    st.info("Enter tickers above or select from the list")
     st.stop()
+
+st.markdown(f"**Analyzing {len(tickers)} stocks:** {', '.join(tickers)}")
 
 # -------------------------------
 # FETCH DATA
@@ -37,17 +53,15 @@ def get_data(tickers):
             info = stock.info
             hist = stock.history(period="60d")
 
-            price = info.get("currentPrice") or np.nan
+            price = info.get("currentPrice") or info.get("regularMarketPrice") or np.nan
 
             # RSI (14-day)
             delta = hist["Close"].diff()
-            gain = delta.clip(lower=0)
-            loss = -delta.clip(upper=0)
-            avg_gain = gain.rolling(14).mean()
-            avg_loss = loss.rolling(14).mean()
-            rs = avg_gain / avg_loss
+            gain = delta.clip(lower=0).rolling(14).mean()
+            loss = -delta.clip(upper=0).rolling(14).mean()
+            rs = gain / loss
             rsi = 100 - (100 / (1 + rs))
-            current_rsi = round(rsi.iloc[-1], 1) if not rsi.empty else np.nan
+            current_rsi = round(rsi.iloc[-1], 1) if len(rsi) > 0 else np.nan
 
             # Real dividend
             divs = stock.dividends
@@ -68,7 +82,8 @@ def get_data(tickers):
                 "ROE %": round((info.get("returnOnEquity") or 0)*100, 1),
                 "RSI (14)": current_rsi,
             })
-        except:
+        except Exception as e:
+            st.warning(f"{t}: {e}")
             rows.append({"Ticker": t, "Name": "Error", "Price": np.nan, "Yield %": np.nan, "Annual Div $": np.nan,
                          "Trailing P/E": np.nan, "P/B": np.nan, "Debt/Equity": np.nan, "ROE %": np.nan, "RSI (14)": np.nan})
     return pd.DataFrame(rows).set_index("Ticker")
@@ -104,7 +119,6 @@ styled_val = val_df.style.format({
     "Price": "${:,.2f}", "P/E Fair": "${:,.2f}", "P/B Fair": "${:,.2f}",
     "Fair Value": "${:,.2f}", "Upside %": "{:+.1f}%"
 }, na_rep="—").background_gradient(subset=["Upside %"], cmap="RdYlGn")
-
 st.dataframe(styled_val, use_container_width=True)
 
 # -------------------------------
@@ -133,16 +147,16 @@ for idx, row in df.iterrows():
         elif pb < 2.0: score += 15
         points += 1
 
-    # Debt/Equity — REQUIRED for score
+    # Debt/Equity — REQUIRED
     de = row["Debt/Equity"]
     if pd.notna(de):
         if de < 20: score += 20
         elif de < 50: score += 10
         points += 1
     else:
-        score = np.nan  # No score if D/E missing
+        score = np.nan
 
-    fund_score = round(score, 0) if pd.notna(score) else "—"
+    fund_score = int(round(score, 0)) if pd.notna(score) else "—"
 
     score_results.append({
         "Ticker": idx,
@@ -163,31 +177,29 @@ def color_fund(val):
 styled_score = score_df.style.format({
     "RSI (14)": "{:.1f}", "Yield %": "{:.2f}%", "Debt/Equity": "{:.1f}"
 }, na_rep="—").applymap(color_fund, subset=["Fundamental Score"])
-
 st.dataframe(styled_score, use_container_width=True)
 
 # -------------------------------
-# PLOT USING NEW FUNDAMENTAL SCORE
+# PLOT – USING FUNDAMENTAL SCORE
 # -------------------------------
-st.subheader("3. Best Investment Opportunities (Highest Fundamental Score)")
+st.subheader("3. Best Investment Opportunities (Highest Score)")
 
-valid_scores = score_df["Fundamental Score"].replace("—", np.nan).dropna().astype(int)
-if not valid_scores.empty:
-    plot_df = score_df.loc[valid_scores.index]
-    scores = plot_df["Fundamental Score"].replace("—", 0).astype(int)
+valid = score_df["Fundamental Score"].replace("—", np.nan).dropna()
+if not valid.empty:
+    plot_df = score_df.loc[valid.index]
+    scores = plot_df["Fundamental Score"].astype(int)
     colors = ["#27ae60" if s >= 80 else "#f39c12" if s >= 60 else "#e74c3c" for s in scores]
 
     fig, ax = plt.subplots(figsize=(10, 6))
     ax.barh(plot_df.index[::-1], scores[::-1], color=colors[::-1], height=0.7)
     ax.set_xlabel("Fundamental Score (0–100) – Higher = Safer & Cheaper")
-    ax.set_title("Green = Strong Buy • Yellow = Fair • Red = Risky/Expensive")
+    ax.set_title("Green = Strong Buy • Yellow = Fair • Red = Risky")
     ax.grid(axis='x', alpha=0.3)
     for i, (t, s) in enumerate(zip(plot_df.index[::-1], scores[::-1])):
-        if s > 0:
-            ax.text(s + 1, i, f"{int(s)}", va='center', fontweight='bold')
+        ax.text(s + 1, i, f"{s}", va='center', fontweight='bold')
     st.pyplot(fig)
 else:
-    st.info("No stocks have Debt/Equity data → no Fundamental Score available")
+    st.info("No stocks have complete Debt/Equity data → no scores available")
 
-st.success("Two clean tables • RSI • Real dividends • Debt-aware score • Pure value")
+st.success("Manual ticker entry • RSI • Debt-aware score • Pure value investing")
 st.caption("Data: Yahoo Finance • Nov 30 2025 • Not financial advice")
