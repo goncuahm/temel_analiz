@@ -11,7 +11,7 @@ st.markdown("**Pure trailing valuation • RSI • Debt-aware Fundamental Score*
 # -------------------------------
 # STOCK SELECTION
 # -------------------------------
-all_miners = ["AEM","NEM","WPM","FNV","PAAS","KGC","SSRM","RGLD","HL","CDE","SAND","OR","EXK","AGI"]
+all_miners = ["AEM","NEM","WPM","GOLD","FNV","PAAS","KGC","SSRM","RGLD","HL","CDE","SAND","OR","EXK","AGI"]
 
 col1, col2 = st.columns([1, 3])
 with col1:
