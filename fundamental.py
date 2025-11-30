@@ -4,32 +4,22 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 
+# Page config
 st.set_page_config(page_title="Mining Fair Value Calculator", layout="wide", page_icon="gold_bar")
 st.title("Gold & Silver Mining Fair Value Calculator")
-st.markdown("### Professional Valuation Tool for Dividend-Paying Miners")
+st.markdown("### Valuation Tool for Dividend-Paying Miners")
 
-# -------------------------------
-# SIDEBAR
-# -------------------------------
-st.sidebar.header("Model Settings")
+# Sidebar
+st.sidebar.header("Settings")
 default_tickers = ["AEM", "WPM", "FNV", "PAAS"]
-tickers_input = st.sidebar.text_input(
-    "Enter tickers (comma-separated):",
-    value=", ".join(default_tickers)
-)
+tickers_input = st.sidebar.text_input("Tickers:", value=", ".join(default_tickers))
 companies = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
 
-discount_rate = st.sidebar.slider("Discount Rate", 0.05, 0.15, 0.075, 0.005,
-                                  help="7.5% = standard for miners")
+discount_rate = st.sidebar.slider("Discount Rate", 0.05, 0.15, 0.075, 0.005)
 terminal_growth = st.sidebar.slider("Terminal Growth", 0.00, 0.06, 0.03, 0.005)
 
-st.sidebar.markdown("---")
-st.sidebar.info("Tool auto-handles data issues; check warnings for details.")
-
-# -------------------------------
-# FETCH DATA – ROBUST VERSION
-# -------------------------------
-@st.cache_data(ttl=3600, show_spinner="Fetching data...")
+# Fetch data
+@st.cache_data(ttl=3600)
 def get_fundamentals(tickers):
     data = {}
     for ticker in tickers:
@@ -38,69 +28,81 @@ def get_fundamentals(tickers):
             info = stock.info
             price = info.get("currentPrice") or np.nan
 
-            # Dividends – robust
-            yield_pct = (info.get("dividendYield") or 0) * 100
-            fwd_div = info.get("forwardDividend") or (info.get("dividendYield") or 0) * price
-            annual_div = fwd_div  # Use forward for DDM
+            yield_pct = (info.get("dividendYield") or 0) * 100  # % for display
+            annual_div = info.get("forwardDividend") or (info.get("dividendYield") or 0) * price
 
-            # Growth – robust
-            rev_growth = info.get("revenueGrowth") or 0.06
-            earn_growth = info.get("earningsGrowth") or 0.04
+            rev_growth = info.get("revenueGrowth") or 0.06  # decimal for calc
+            earn_growth = info.get("earningsGrowth") or 0.04  # decimal for calc
 
-            # Cap growth to avoid blow-up
-            earn_growth = min(earn_growth, discount_rate - 0.005)  # For DDM safety
-
-            # FCF & Shares
             fcf_m = info.get("freeCashflow") or np.nan
-            shares_m = (info.get("sharesOutstanding") or info.get("impliedSharesOutstanding", np.nan)) / 1e6
+            shares_m = (info.get("sharesOutstanding") or np.nan) / 1e6
 
             data[ticker] = {
-                "Price": price,
-                "Yield %": yield_pct,
+                "Ticker": ticker,
+                "Name": info.get("longName", ticker),
+                "Price $": price,
+                "Fwd EPS $": info.get("forwardEps"),
+                "Dividend Yield %": yield_pct,
                 "Annual Div $": annual_div,
-                "Rev Growth": rev_growth,
-                "Earn Growth": earn_growth,
-                "FCF TTM $M": fcf_m,
-                "Shares M": shares_m,
-                "Fwd EPS": info.get("forwardEps"),
                 "P/E": info.get("trailingPE"),
                 "P/B": info.get("priceToBook"),
-                "Book Value": info.get("bookValue"),
-                "Name": info.get("longName", ticker),
+                "Book Value $": info.get("bookValue"),
+                "Free Cash Flow TTM $M": fcf_m,
+                "Shares M": shares_m,
+                "Revenue Growth": rev_growth,
+                "Earnings Growth": earn_growth,
             }
-        except Exception as e:
-            st.warning(f"Data issue for {ticker}: {e}")
-            data[ticker] = {k: np.nan for k in ["Price", "Yield %", "Annual Div $", "Rev Growth", "Earn Growth", "FCF TTM $M", "Shares M", "Fwd EPS", "P/E", "P/B", "Book Value", "Name"]}
-    return pd.DataFrame(data).T
+        except:
+            st.warning(f"Data issue for {ticker}")
+            data[ticker] = {k: np.nan for k in data[ticker].keys() if ticker in data}
+    return pd.DataFrame(data).T.set_index("Ticker")
 
 if not companies:
     st.stop()
 
 df = get_fundamentals(companies)
 
-# -------------------------------
-# DISPLAY
-# -------------------------------
+# Display
 numeric_cols = df.select_dtypes(include=[np.number]).columns
 styled = df.style.format({
-    "Price": "${:,.2f}",
-    "Yield %": "{:.2f}%",
+    "Price $": "${:,.2f}",
+    "Fwd EPS $": "${:,.2f}",
+    "Dividend Yield %": "{:.2f}%",
     "Annual Div $": "${:,.3f}",
-    "Rev Growth": "{:.1%}",
-    "Earn Growth": "{:.1%}",
-    "FCF TTM $M": "${:,.0f}M",
+    "Book Value $": "${:,.2f}",
+    "Free Cash Flow TTM $M": "${:,.0f}M",
     "Shares M": "{:,.1f}M",
-    "Fwd EPS": "${:,.2f}",
     "P/E": "{:.1f}",
     "P/B": "{:.2f}",
-    "Book Value": "${:,.2f}",
+    "Revenue Growth": "{:.1%}",
+    "Earnings Growth": "{:.1%}",
 }, na_rep="—")
 
 st.subheader("1. Verified Fundamental Data")
 st.dataframe(styled, use_container_width=True)
 
 # -------------------------------
-# VALUATION
+# VALUATION MODELS
+# -------------------------------
+def dcf_value(fcf_m, g, r, g_term, shares_m):
+    if pd.isna(fcf_m) or pd.isna(shares_m) or fcf_m <= 0 or r <= g_term:
+        return np.nan
+    fcf = fcf_m * 1e6  # millions to dollars
+    shares = shares_m * 1e6
+    pv_explicit = sum(fcf * (1 + g)**t / (1 + r)**t for t in range(1, 6))
+    fcf_year5 = fcf * (1 + g)**5
+    terminal_value = fcf_year5 * (1 + g_term) / (r - g_term)
+    pv_terminal = terminal_value / (1 + r)**5
+    equity_value = pv_explicit + pv_terminal
+    return equity_value / shares
+
+def ddm_value(annual_div, r, g):
+    if pd.isna(annual_div) or annual_div <= 0 or r <= g:
+        return np.nan
+    return annual_div * (1 + g) / (r - g)
+
+# -------------------------------
+# CALCULATE
 # -------------------------------
 st.subheader("2. Fair Value Estimates")
 peer_pe = df["P/E"].mean(skipna=True)
@@ -108,23 +110,19 @@ peer_pb = df["P/B"].mean(skipna=True)
 
 results = []
 for ticker, row in df.iterrows():
-    rev_g = row["Rev Growth"]
-    earn_g = row["Earn Growth"]
+    rev_g = row["Revenue Growth"]
+    earn_g = row["Earnings Growth"]
 
-    # DCF
-    dcf = dcf_fair_price(row["FCF TTM $M"], rev_g, discount_rate, terminal_growth, row["Shares M"])
+    dcf = dcf_value(row["Free Cash Flow TTM $M"], rev_g, discount_rate, terminal_growth, row["Shares M"])
+    ddm = ddm_value(row["Annual Div $"], discount_rate, earn_g)
 
-    # DDM
-    ddm = ddm_fair_price(row["Annual Div $"], discount_rate, earn_g)
-
-    # Relative
     rel = np.nanmean([
-        row["Fwd EPS"] * peer_pe if pd.notna(row["Fwd EPS"]) else np.nan,
-        row["Book Value"] * peer_pb if pd.notna(row["Book Value"]) else np.nan
+        row["Fwd EPS $"] * peer_pe if pd.notna(row["Fwd EPS $"]) and pd.notna(peer_pe) else np.nan,
+        row["Book Value $"] * peer_pb if pd.notna(row["Book Value $"]) and pd.notna(peer_pb) else np.nan
     ])
 
     avg_fair = np.nanmean([dcf, ddm, rel])
-    upside = (avg_fair / row["Price"] - 1) * 100 if pd.notna(avg_fair) and pd.notna(row["Price"]) else np.nan
+    upside = (avg_fair / row["Price $"] - 1) * 100 if pd.notna(avg_fair) and pd.notna(row["Price $"]) else np.nan
 
     if pd.isna(ddm):
         st.info(f"{ticker}: DDM N/A (no dividend or growth ≥ discount)")
@@ -133,11 +131,11 @@ for ticker, row in df.iterrows():
 
     results.append({
         "Ticker": ticker,
-        "Price": row["Price"],
-        "DCF": dcf,
-        "DDM": ddm,
-        "Relative": rel,
-        "Fair Value": avg_fair,
+        "Current Price": row["Price $"],
+        "DCF Value": dcf,
+        "DDM Value": ddm,
+        "Relative Value": rel,
+        "Average Fair Value": avg_fair,
         "Upside %": upside
     })
 
@@ -152,18 +150,18 @@ st.dataframe(
 # -------------------------------
 # PLOT
 # -------------------------------
-st.subheader("3. Fair Value vs Current Price")
+st.subheader("3. Fair Value Comparison")
 fig, ax = plt.subplots(figsize=(12, 6))
 x = np.arange(len(val_df))
 width = 0.18
-cols = ["Price", "DCF", "DDM", "Relative"]
+cols = ["Current Price", "DCF Value", "DDM Value", "Relative Value"]
 
 for i, col in enumerate(cols):
     vals = val_df[col].fillna(0)
     ax.bar(x + i*width - 1.5*width, vals, width, label=col)
 
 ax.set_ylabel("Price ($)")
-ax.set_title("Fair Value Comparison")
+ax.set_title("Fair Value vs Current Price")
 ax.set_xticks(x)
 ax.set_xticklabels(val_df.index)
 ax.legend()
@@ -173,12 +171,12 @@ for i, tk in enumerate(val_df.index):
     up = val_df.loc[tk, "Upside %"]
     if pd.notna(up):
         color = "green" if up > 20 else "orange" if up > 0 else "red"
-        ax.text(i, val_df.loc[tk, "Price"], f"{up:+.1f}%", ha='center', va='bottom', fontweight='bold', color=color)
+        ax.text(i, val_df.loc[tk, "Current Price"], f"{up:+.1f}%", ha='center', va='bottom', fontweight='bold', color=color)
 
 st.pyplot(fig)
 
 # -------------------------------
-# GUIDE
+# EXPANDABLE GUIDE
 # -------------------------------
 with st.expander("How This Works – Formulas & Best Practices", expanded=False):
     st.markdown("""
@@ -187,12 +185,12 @@ with st.expander("How This Works – Formulas & Best Practices", expanded=False)
     | Model             | Formula                                              | Best For                              |
     |-------------------|------------------------------------------------------|---------------------------------------|
     | **Gordon Growth (DDM)** | `Annual Div × (1+g) / (r − g)`                       | Royalty companies (FNV, WPM)          |
-    | **Two-Stage DCF** | 5-yr FCF forecast + Terminal Value = `FCF₅ × (1+g_term) / (r − g_term)` | Producers (AEM, PAAS)                 |
+    | **Two-Stage DCF** | 5-yr FCF + Terminal Value = `FCF₅ × (1+g_term) / (r − g_term)` | Producers (AEM, PAAS)                 |
     | **Relative**      | Avg(Fwd EPS × Peer P/E, Book × Peer P/B)             | Sanity check                          |
 
-    **Data Scaling (Now Perfect):**
+    ### Data Scaling (Corrected & Verified)
     - Yield: **%** in table (e.g., 1.60%)
-    - Growth: **decimal** in calc (0.08 = 8%)
+    - Growth: **decimal** in calc (0.08 = 8%), **%** in display
     - FCF: **millions $** → converted to dollars
     - Shares: **millions** → converted correctly
 
@@ -200,13 +198,12 @@ with st.expander("How This Works – Formulas & Best Practices", expanded=False)
     - Discount Rate: **7.5%** royalties, **9%** producers
     - Terminal Growth: **3%**
     - Buy: **Upside >25%** + Renko green + RSI <45
-    - If DDM NaN: Stock doesn't pay dividends – focus on DCF/Relative
+    - If DDM NaN: No dividend – focus on DCF/Relative
 
     This produces analyst-grade fair values in seconds.
     """)
 
-st.caption("Data: Yahoo Finance • Formulas: Standard (Gordon, DCF) • Not financial advice • © 2025")
-
+st.caption("Data: Yahoo Finance • Formulas: Standard • Not financial advice • © 2025")
 
 
 
