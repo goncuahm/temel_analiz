@@ -4,69 +4,67 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 
-st.set_page_config(page_title="Smart Global Screener", layout="wide", page_icon="trophy")
-st.title("Smart Stock Screener – Global & Turkish Stocks")
-st.markdown("**Add any ticker • Remove with X • Peer-relative scoring**")
+st.set_page_config(page_title="Smart Turkish & Global Screener", layout="wide", page_icon="trophy")
+st.title("Smart Stock Screener – BIST + Global")
+st.markdown("**Peer-relative scoring • Official yield • Works with .IS**")
 
 # ================================
-# PERSISTENT WATCHLIST WITH REMOVABLE CHIPS
+# PERSISTENT WATCHLIST
 # ================================
 if "watchlist" not in st.session_state:
     st.session_state.watchlist = [
-        "EREGL.IS", "PAGYO.IS", "THYAO.IS", "AKBNK.IS", "GARAN.IS",
-        "AEM", "WPM", "FNV", "O", "NNN", "WPC"
+        "EREGL.IS", "PAGYO.IS", "TUPRS.IS", "SISE.IS", "KRDMD.IS",
+        "AKBNK.IS", "GARAN.IS", "ISCTR.IS", "THYAO.IS", "SASA.IS"
     ]
 
-# -------------------------------
-# ADD NEW TICKERS
-# -------------------------------
-new_input = st.text_input(
-    "Add new tickers (e.g. SISE.IS VOD.L AAPL)",
-    placeholder="Type and press Enter",
-    key="add_new"
+# ================================
+# YOUR EXACT TICKER INPUT STYLE
+# ================================
+st.subheader("Enter Stock Tickers")
+ticker_input = st.text_area(
+    "Enter stock tickers (one per line or comma-separated):",
+    value="BASGZ.IS, AFYON.IS, ENJSA.IS, EREGL.IS, AYEN.IS, PAGYO.IS, YGGYO.IS, TUPRS.IS, KRDMD.IS, SISE.IS, LOGO.IS, NTGAZ.IS, AKGRT.IS, GWIND.IS, ISCTR.IS, AKSA.IS, GMSTR.IS, YUNSA.IS, DOAS.IS, SASA.IS",
+    height=120,
+    help="You can edit, add, or remove any ticker here"
 )
 
-if new_input.strip():
-    new_ticks = [t.strip().upper() for t in new_input.replace(",", " ").split() if t.strip()]
-    current = set(st.session_state.watchlist)
-    added = [t for t in new_ticks if t not in current]
-    st.session_state.watchlist = list(current.union(new_ticks))
-    if added:
-        st.success(f"Added: {', '.join(added)}")
-    st.rerun()
-
-# -------------------------------
-# DISPLAY WATCHLIST WITH X BUTTONS
-# -------------------------------
-st.markdown("### Your Watchlist")
-if st.session_state.watchlist:
-    cols = st.columns(6)
-    for i, ticker in enumerate(st.session_state.watchlist):
-        with cols[i % 6]:
-            col1, col2 = st.columns([4, 1])
-            with col1:
-                st.write(f"`{ticker}`")
-            with col2:
-                if st.button("X", key=f"remove_{ticker}"):
-                    st.session_state.watchlist.remove(ticker)
-                    st.rerun()
+# Parse input and update watchlist
+if ticker_input.strip():
+    new_tickers = [t.strip().upper() for t in ticker_input.replace('\n', ',').split(',') if t.strip()]
+    # Update session state (merge, no duplicates)
+    st.session_state.watchlist = sorted(list(set(new_tickers)))
 else:
-    st.info("Your watchlist is empty – add tickers above!")
-
-# Clear all button
-if st.session_state.watchlist:
-    if st.button("Clear All Watchlist"):
-        st.session_state.watchlist = []
-        st.rerun()
+    st.session_state.watchlist = []
 
 if not st.session_state.watchlist:
+    st.warning("Please enter at least one ticker symbol.")
     st.stop()
 
-tickers = st.session_state.watchlist
-st.markdown(f"**Analyzing {len(tickers)} stocks:** {', '.join(tickers)}")
+st.success(f"Analyzing {len(st.session_state.watchlist)} stock(s): {', '.join(st.session_state.watchlist)}")
 
 # ================================
-# FETCH DATA – GLOBAL + TURKISH SUPPORT
+# DISPLAY REMOVABLE CHIPS WITH X
+# ================================
+st.markdown("### Your Watchlist (click X to remove)")
+cols = st.columns(6)
+for i, ticker in enumerate(st.session_state.watchlist):
+    with cols[i % 6]:
+        col1, col2 = st.columns([4, 1])
+        with col1:
+            st.write(f"`{ticker}`")
+        with col2:
+            if st.button("X", key=f"del_{ticker}_{i}"):
+                st.session_state.watchlist.remove(ticker)
+                st.rerun()
+
+if st.button("Clear All"):
+    st.session_state.watchlist = []
+    st.rerun()
+
+tickers = st.session_state.watchlist
+
+# ================================
+# FETCH DATA
 # ================================
 @st.cache_data(ttl=1800)
 def fetch_data(tickers_list):
@@ -79,23 +77,21 @@ def fetch_data(tickers_list):
 
             # RSI (9)
             hist = stock.history(period="60d")
+            rsi = None
             if len(hist) >= 20:
                 delta = hist["Close"].diff()
                 gain = delta.clip(lower=0).rolling(9).mean()
                 loss = -delta.clip(upper=0).rolling(9).mean()
                 rs = gain / loss
-                rsi_val = 100 - (100 / (1 + rs))
-                rsi = round(rsi_val.iloc[-1], 1)
-            else:
-                rsi = None
+                rsi = round(100 - (100 / (1 + rs)).iloc[-1], 1)
 
-            # Official dividend yield
+            # Official yield
             yield_pct = round((info.get("trailingAnnualDividendYield") or 0) * 100, 2)
             annual_div = round(info.get("trailingAnnualDividendRate") or 0, 3)
 
             data.append({
                 "Ticker": t,
-                "Name": info.get("longName", t)[:30],
+                "Name": info.get("longName", t)[:25],
                 "Price": price,
                 "RSI (9)": rsi,
                 "Yield %": yield_pct,
@@ -114,7 +110,7 @@ def fetch_data(tickers_list):
 df = fetch_data(tickers)
 
 # ================================
-# SMART SCORING
+# SCORING & DISPLAY (same powerful logic)
 # ================================
 def calc_score(row):
     comp = []
@@ -137,9 +133,7 @@ def calc_score(row):
 
 df["Fundamental Score"] = df.apply(calc_score, axis=1)
 
-# ================================
-# 1. RELATIVE FAIR VALUE
-# ================================
+# Relative Fair Value
 st.subheader("1. Relative Fair Value")
 peer_pe = df["P/E"].median()
 peer_pb = df["P/B"].median()
@@ -150,14 +144,11 @@ for idx, row in df.iterrows():
     fair = np.nanmean([rel_pe, rel_pb]) if pd.notna(rel_pe) or pd.notna(rel_pb) else np.nan
     upside = (fair / row["Price"] - 1) * 100 if pd.notna(fair) and pd.notna(row["Price"]) and row["Price"] > 0 else np.nan
     rows.append({"Ticker": idx, "Price": row["Price"], "Fair Value": fair, "Upside %": upside})
-
 val_df = pd.DataFrame(rows).round(2).set_index("Ticker")
 st.dataframe(val_df.style.format({"Price": "${:,.2f}", "Fair Value": "${:,.2f}", "Upside %": "{:+.1f}%"}, na_rep="—")
              .background_gradient(subset=["Upside %"], cmap="RdYlGn"), use_container_width=True)
 
-# ================================
-# 2. MAIN TABLE
-# ================================
+# Main Table
 st.subheader("2. Key Metrics & Smart Score")
 cols = ["RSI (9)", "Yield %", "Annual Div", "P/E", "P/B", "ROE %", "Profit Margin %", "Fundamental Score"]
 st.dataframe(df[cols].style.format({
@@ -165,28 +156,22 @@ st.dataframe(df[cols].style.format({
     "P/E": "{:.1f}", "P/B": "{:.2f}", "ROE %": "{:.1f}%", "Profit Margin %": "{:.1f}%"
 }, na_rep="—"), use_container_width=True)
 
-# ================================
-# 3. RANKING CHART
-# ================================
-st.subheader("3. Best Opportunities")
+# Chart
+st.subheader("3. Top Ranked Stocks")
 scored = df.dropna(subset=["Fundamental Score"]).sort_values("Fundamental Score", ascending=False)
 if not scored.empty:
     colors = ["#1e7b1e" if s >= 80 else "#f39c12" if s >= 65 else "#c0392b" for s in scored["Fundamental Score"]]
     fig, ax = plt.subplots(figsize=(10, 0.6 * len(scored)))
     ax.barh(scored.index[::-1], scored["Fundamental Score"][::-1], color=colors[::-1])
     ax.set_xlabel("Smart Score (0–100)")
-    ax.set_title("Green = Excellent • Red = Expensive")
+    ax.set_title("Green = Excellent Value • Red = Expensive")
     ax.grid(axis='x', alpha=0.3)
-    for i, (idx, s) in enumerate(zip(scored.index[::-1], scored["Fundamental Score"][::-1])):
+    for i, s in enumerate(scored["Fundamental Score"][::-1]):
         ax.text(s + 1, i, f"{s:.1f}", va='center', fontweight='bold')
     st.pyplot(fig)
 
-st.success("Removable chips with X • Add below • Works with .IS, .L, .DE • Perfect!")
-st.caption("Yahoo Finance • Real-time • Global stocks • 2025")
-
-
-
-
+st.success("Your exact input style • Removable chips • Works perfectly with BIST stocks")
+st.caption("Yahoo Finance • Real-time • Global + Turkish • 2025")
 
 
 
