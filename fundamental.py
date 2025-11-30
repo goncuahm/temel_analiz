@@ -58,8 +58,8 @@ def fetch_data(tickers):
             # RSI
             hist = stock.history(period="60d")
             delta = hist["Close"].diff()
-            gain = delta.clip(lower=0).rolling(14).mean()
-            loss = -delta.clip(upper=0).rolling(14).mean()
+            gain = delta.clip(lower=0).rolling(9).mean()
+            loss = -delta.clip(upper=0).rolling(9).mean()
             rs = gain / loss
             rsi = 100 - (100 / (1 + rs))
             current_rsi = round(rsi.iloc[-1], 1) if len(rsi) > 0 else None
@@ -75,7 +75,7 @@ def fetch_data(tickers):
                 "Ticker": t,
                 "Name": info.get("longName", t).split(" Corporation")[0].split(" Inc")[0],
                 "Price": price,
-                "RSI (14)": current_rsi,
+                "RSI (9)": current_rsi,
                 "Yield %": yield_pct,
                 "Annual Div $": annual_div,
                 "P/E": info.get("trailingPE"),
@@ -85,7 +85,7 @@ def fetch_data(tickers):
             })
         except Exception as e:
             st.warning(f"{t}: {e}")
-            data.append({"Ticker": t, "Name": "Error", "Price": None, "RSI (14)": None, "Yield %": 0,
+            data.append({"Ticker": t, "Name": "Error", "Price": None, "RSI (9)": None, "Yield %": 0,
                          "Annual Div $": 0, "P/E": None, "P/B": None, "ROE %": None, "Profit Margin %": None})
     return pd.DataFrame(data).set_index("Ticker")
 
@@ -154,7 +154,7 @@ st.dataframe(val_df.style.format({"Price": "${:,.2f}", "P/E Fair": "${:,.2f}", "
 # -------------------------------
 st.subheader("2. Technical + Income + Smart Score")
 display = df[["RSI (14)", "Yield %", "Annual Div $", "P/E", "P/B", "ROE %", "Profit Margin %", "Fundamental Score"]].round(2)
-st.dataframe(display.style.format({"RSI (14)": "{:.1f}", "Yield %": "{:.2f}%", "Annual Div $": "${:.3f}",
+st.dataframe(display.style.format({"RSI (9)": "{:.1f}", "Yield %": "{:.2f}%", "Annual Div $": "${:.3f}",
                                    "P/E": "{:.1f}", "P/B": "{:.2f}", "ROE %": "{:.1f}%", "Profit Margin %": "{:.1f}%"},
                                   na_rep="—"), use_container_width=True)
 
