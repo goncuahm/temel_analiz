@@ -7,8 +7,8 @@ import matplotlib.pyplot as plt
 # -------------------------------
 # PAGE CONFIG
 # -------------------------------
-st.set_page_config(page_title="Mining Stock Fair Value Calculator", layout="wide", page_icon="gold_bar")
-st.title("Mining & Dividend Stock Fair Value Calculator")
+st.set_page_config(page_title="Stock Fair Value Calculator", layout="wide", page_icon="gold_bar")
+st.title("Discounted Dividend and Free Cash Flow Calculator")
 st.markdown("### Gold & Silver Royalty + Producer Valuation Tool")
 
 # -------------------------------
