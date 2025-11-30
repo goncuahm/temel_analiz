@@ -5,58 +5,42 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 st.set_page_config(page_title="Smart Dividend & Value Screener", layout="wide", page_icon="trophy")
-st.title("Smart Stock Screener – Accurate Yield + Peer Scoring")
-st.markdown("**Official dividend yield • P/E • P/B • ROE • Margin → True 0–100 Score**")
+st.title("Smart Stock Screener – Peer-Relative Scoring")
+st.markdown("**Fixed: No TypeError in np.nanmean • Safe numeric handling**")
 
-# ================================
-# PREDEFINED SETS
-# ================================
-predefined_sets = {
-    "Top 5 Royalty/Streaming": ["WPM", "FNV", "RGLD", "OR", "SAND"],
-    "Top 5 Triple-Net REITs":   ["O", "NNN", "WPC", "ADC", "SRC"],
-    "Top 5 Tech Giants":        ["AAPL", "MSFT", "GOOGL", "NVDA", "META"],
-    "Top 5 Gold Miners":        ["AEM", "NEM", "GOLD", "KGC", "PAAS"],
-    "Reliable Dividend Mix":    ["AEM", "WPM", "FNV", "O", "NNN", "WPC"]
-}
+# -------------------------------
+# DEFAULT STOCKS
+# -------------------------------
+default_stocks = ["AEM", "WPM", "FNV", "O", "NNN", "WPC"]
 
-if "tickers" not in st.session_state:
-    st.session_state.tickers = predefined_sets["Reliable Dividend Mix"]
+all_options = default_stocks + ["GOLD","KGC","PAAS","RGLD","STAG","VICI","ADC","EPR","SRC"]
 
-# ================================
-# USER INPUT
-# ================================
-col1, col2, col3 = st.columns([2, 2, 3])
+# -------------------------------
+# INPUT
+# -------------------------------
+manual_input = st.text_input(
+    "Enter tickers (space/comma separated) or use default list:",
+    placeholder="AEM O NNN WPC FNV"
+)
 
-with col1:
-    add_manual = st.text_input("Add tickers (space/comma):", placeholder="VICI NVDA TSLA")
-    if add_manual.strip():
-        new = [t.strip().upper() for t in add_manual.replace(",", " ").split() if t.strip()]
-        st.session_state.tickers = sorted(list(set(st.session_state.tickers) | set(new)))
+if manual_input.strip():
+    tickers = [t.strip().upper() for t in manual_input.replace(",", " ").split() if t.strip()]
+else:
+    tickers = st.multiselect(
+        "Select stocks (default = reliable dividend payers):",
+        options=all_options,
+        default=default_stocks
+    )
 
-with col2:
-    selected_set = st.selectbox("Load predefined set → adds to list", [""] + list(predefined_sets.keys()))
-    if selected_set:
-        st.session_state.tickers = sorted(list(set(st.session_state.tickers) | set(predefined_sets[selected_set])))
-        st.success(f"Added {selected_set}")
-
-with col3:
-    st.write("**Current Watchlist:**")
-    if st.session_state.tickers:
-        st.write(", ".join(st.session_state.tickers))
-        if st.button("Clear All"):
-            st.session_state.tickers = []
-            st.rerun()
-    else:
-        st.info("Empty – add stocks above")
-
-if not st.session_state.tickers:
+if not tickers:
+    st.info("Enter tickers or select from the list")
     st.stop()
 
-tickers = st.session_state.tickers
+st.markdown(f"**Analyzing {len(tickers)} stocks:** {', '.join(tickers)}")
 
-# ================================
-# FETCH DATA – OFFICIAL YIELD
-# ================================
+# -------------------------------
+# FETCH DATA
+# -------------------------------
 @st.cache_data(ttl=1800)
 def fetch_data(tickers):
     data = []
@@ -66,29 +50,29 @@ def fetch_data(tickers):
             info = stock.info
             price = info.get("currentPrice") or info.get("regularMarketPrice")
 
-            # Official trailing 12-month dividend yield
-            yield_official = info.get("trailingAnnualDividendYield")
-            yield_pct = round(yield_official * 100, 2) if yield_official else 0.0
-
-            # Trailing 12-month total dividend
-            annual_div = info.get("trailingAnnualDividendRate") or 0.0
-
             # RSI
             hist = stock.history(period="60d")
             delta = hist["Close"].diff()
-            gain = delta.clip(lower=0).rolling(10).mean()
-            loss = -delta.clip(upper=0).rolling(10).mean()
+            gain = delta.clip(lower=0).rolling(14).mean()
+            loss = -delta.clip(upper=0).rolling(14).mean()
             rs = gain / loss
             rsi = 100 - (100 / (1 + rs))
             current_rsi = round(rsi.iloc[-1], 1) if len(rsi) > 0 else None
+
+            # Dividend
+            divs = stock.dividends
+            recent = divs[divs.index > divs.index.max() - pd.Timedelta(days=400)]
+            last_div = recent.iloc[-1] if not recent.empty else 0
+            annual_div = round(last_div * 4, 3) if last_div > 0 else 0
+            yield_pct = round((annual_div / price) * 100, 2) if price and annual_div > 0 else 0
 
             data.append({
                 "Ticker": t,
                 "Name": info.get("longName", t).split(" Corporation")[0].split(" Inc")[0],
                 "Price": price,
-                "RSI (10)": current_rsi,
+                "RSI (14)": current_rsi,
                 "Yield %": yield_pct,
-                "Annual Div $": round(annual_div, 3),
+                "Annual Div $": annual_div,
                 "P/E": info.get("trailingPE"),
                 "P/B": info.get("priceToBook"),
                 "ROE %": round((info.get("returnOnEquity") or 0) * 100, 1),
@@ -96,16 +80,15 @@ def fetch_data(tickers):
             })
         except Exception as e:
             st.warning(f"{t}: {e}")
-            data.append({"Ticker": t, "Name": "Error", "Price": None, "RSI (14)": None,
-                         "Yield %": 0.0, "Annual Div $": 0.0, "P/E": None, "P/B": None,
-                         "ROE %": None, "Profit Margin %": None})
+            data.append({"Ticker": t, "Name": "Error", "Price": None, "RSI (14)": None, "Yield %": 0,
+                         "Annual Div $": 0, "P/E": None, "P/B": None, "ROE %": None, "Profit Margin %": None})
     return pd.DataFrame(data).set_index("Ticker")
 
 df = fetch_data(tickers)
 
-# ================================
-# SMART SCORING (perfect)
-# ================================
+# -------------------------------
+# SMART SCORING
+# -------------------------------
 def calc_score(row, v_pe, v_pb, v_roe, v_margin):
     comp = []
     if row["P/E"] and row["P/E"] > 0 and len(v_pe) > 1:
@@ -117,19 +100,22 @@ def calc_score(row, v_pe, v_pb, v_roe, v_margin):
     if pd.notna(row["Profit Margin %"]) and len(v_margin) > 1:
         comp.append((100 * (row["Profit Margin %"] - min(v_margin)) / (max(v_margin) - min(v_margin)), 0.20))
     if not comp: return None
-    return round(sum(s * w for s, w in comp) / sum(w for _, w in comp), 1)
+    total_w = sum(w for _, w in comp)
+    return round(sum(s * w for s, w in comp) / total_w, 1)
 
 valid_pe = [v for v in df["P/E"] if v and v > 0]
 valid_pb = [v for v in df["P/B"] if v and v > 0]
 valid_roe = [v for v in df["ROE %"] if pd.notna(v)]
 valid_margin = [v for v in df["Profit Margin %"] if pd.notna(v)]
 
-df["Fundamental Score"] = df.apply(lambda row: calc_score(row, valid_pe, valid_pb, valid_roe, valid_margin), axis=1)
+df["Fundamental Score"] = df.apply(
+    lambda row: calc_score(row, valid_pe, valid_pb, valid_roe, valid_margin), axis=1
+)
 
-# ================================
+# -------------------------------
 # 1. VALUATION TABLE
-# ================================
-st.subheader("1. Relative Fair Value")
+# -------------------------------
+st.subheader("1. Relative Fair Value (P/E + P/B)")
 peer_pe = df["P/E"].median()
 peer_pb = df["P/B"].median()
 val_rows = []
@@ -145,18 +131,18 @@ st.dataframe(val_df.style.format({"Price": "${:,.2f}", "P/E Fair": "${:,.2f}", "
                                   "Fair Value": "${:,.2f}", "Upside %": "{:+.1f}%"}, na_rep="—")
              .background_gradient(subset=["Upside %"], cmap="RdYlGn"), use_container_width=True)
 
-# ================================
+# -------------------------------
 # 2. CLEAN TABLE WITH OFFICIAL YIELD
-# ================================
+# -------------------------------
 st.subheader("2. Technical + Income + Smart Score")
-display = df[["RSI (10)", "Yield %", "Annual Div $", "P/E", "P/B", "ROE %", "Profit Margin %", "Fundamental Score"]].round(2)
+display = df[["RSI (14)", "Yield %", "Annual Div $", "P/E", "P/B", "ROE %", "Profit Margin %", "Fundamental Score"]].round(2)
 st.dataframe(display.style.format({"RSI (14)": "{:.1f}", "Yield %": "{:.2f}%", "Annual Div $": "${:.3f}",
                                    "P/E": "{:.1f}", "P/B": "{:.2f}", "ROE %": "{:.1f}%", "Profit Margin %": "{:.1f}%"},
                                   na_rep="—"), use_container_width=True)
 
-# ================================
+# -------------------------------
 # 3. RANKING CHART
-# ================================
+# -------------------------------
 st.subheader("3. Best Opportunities – Ranked by Smart Score")
 scored = df.dropna(subset=["Fundamental Score"]).sort_values("Fundamental Score", ascending=False)
 if not scored.empty:
@@ -173,5 +159,5 @@ if not scored.empty:
 else:
     st.warning("Not enough data")
 
-st.success("Official dividend yield • No more ×4 confusion • Clean & accurate")
-st.caption("Data: Yahoo Finance (official trailing yield) • Real-time • Not advice • 2025")
+st.success("Manual + Predefined • Official yield • Peer-relative scoring • Green bars fixed")
+st.caption("Data: Yahoo Finance • Real-time • Not financial advice • 2025")
