@@ -217,7 +217,6 @@ st.caption("Data: Yahoo Finance • Formulas: Standard (Gordon, DCF) • Not fin
 
 
 
-
 # import streamlit as st
 # import yfinance as yf
 # import pandas as pd
