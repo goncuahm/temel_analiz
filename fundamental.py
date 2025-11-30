@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 
 st.set_page_config(page_title="Mining Fair Value Calculator", layout="wide", page_icon="gold_bar")
 st.title("Gold & Silver Mining Fair Value Calculator")
-st.markdown("### Fixed: No KeyError, Correct Dividend Yields, Reliable Data")
+#st.markdown("### Fixed: No KeyError, Correct Dividend Yields, Reliable Data")
 
 # -------------------------------
 # SIDEBAR
@@ -34,7 +34,7 @@ def get_fundamentals(tickers):
 
             # Dividend – correct scaling
             div_yield_decimal = info.get("dividendYield") or 0.0
-            yield_pct = div_yield_decimal * 100
+            yield_pct = div_yield_decimal 
             annual_div = info.get("forwardDividend") or (div_yield_decimal * price)
 
             rev_growth = info.get("revenueGrowth") or 0.06
