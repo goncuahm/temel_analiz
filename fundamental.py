@@ -117,6 +117,11 @@ df["Fundamental Score"] = df.apply(
     lambda row: calc_score(row, valid_pe, valid_pb, valid_roe, valid_margin), axis=1
 )
 
+
+
+
+
+
 # -------------------------------
 # 1. VALUATION TABLE
 # -------------------------------
@@ -125,10 +130,18 @@ peer_pe = df["P/E"].median()
 peer_pb = df["P/B"].median()
 val_rows = []
 for idx, row in df.iterrows():
-    rel_pe = row["Price"] * (peer_pe / row["P/E"]) if pd.notna(row["P/E"]) and row["P/E"] > 0 else None
-    rel_pb = row["Price"] * (peer_pb / row["P/B"]) if pd.notna(row["P/B"]) and row["P/B"] > 0 else None
-    fair = np.nanmean([rel_pe, rel_pb]) if rel_pe or rel_pb else None
-    upside = (fair / row["Price"] - 1) * 100 if fair and row["Price"] else None
+    rel_pe = row["Price"] * (peer_pe / row["P/E"]) if pd.notna(row["P/E"]) and row["P/E"] > 0 else np.nan
+    rel_pb = row["Price"] * (peer_pb / row["P/B"]) if pd.notna(row["P/B"]) and row["P/B"] > 0 else np.nan
+    
+    # Use np.nanmean safely
+    if not (np.isnan(rel_pe) and np.isnan(rel_pb)):
+        fair = np.nanmean([rel_pe, rel_pb])
+        upside = (fair / row["Price"] - 1) * 100 if pd.notna(row["Price"]) and row["Price"] != 0 else None
+    else:
+        fair = None
+        upside = None
+    #fair = np.nanmean([rel_pe, rel_pb]) if rel_pe or rel_pb else None
+    #upside = (fair / row["Price"] - 1) * 100 if fair and row["Price"] else None
     val_rows.append({"Ticker": idx, "Price": row["Price"], "P/E Fair": rel_pe, "P/B Fair": rel_pb,
                      "Fair Value": fair, "Upside %": upside})
 val_df = pd.DataFrame(val_rows).round(2).set_index("Ticker")
