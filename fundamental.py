@@ -4,8 +4,8 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 
-st.set_page_config(page_title="Mining Stock Screener", layout="wide", page_icon="gold_bar")
-st.title("Gold & Silver Miners – Real Dividend + True Fundamental Score")
+st.set_page_config(page_title="Stock Screener", layout="wide", page_icon="gold_bar")
+st.title("Dividend Discounted Value + Fundamental Score")
 st.markdown("**Uses only real, paid dividends & trailing metrics — no forward estimates**")
 
 # -------------------------------
