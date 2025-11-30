@@ -152,7 +152,7 @@ else:
 
 st.success("Manual + Predefined • Official yield • Peer-relative scoring • Green bars fixed")
 st.caption("Data: Yahoo Finance • Real-time • Not financial advice • 2025")
-
+ 
 
 
 
