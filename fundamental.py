@@ -5,42 +5,42 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # -------------------------------
-# PAGE CONFIG
+# PAGE SETUP
 # -------------------------------
 st.set_page_config(page_title="Smart Dividend & Value Screener", layout="wide", page_icon="trophy")
 st.title("Smart Stock Screener – Peer-Relative Scoring")
 st.markdown("**RSI (9-day) • Default: 4 Top Mining + 5 Top REITs (US)**")
 
 # -------------------------------
-# CLEAR CACHE
-# -------------------------------
-st.cache_data.clear()
-
-# -------------------------------
 # DEFAULT TICKERS
 # -------------------------------
-DEFAULT_STOCKS = [
-    "AEM", "WPM", "FNV", "NEM",    # 4 Top Mining / Royalty
-    "O", "NNN", "WPC", "ADC", "VICI"  # 5 Top Dividend REITs
-]
+DEFAULT_STOCKS = ["AEM", "WPM", "FNV", "NEM",      # 4 Top Mining / Royalty
+                  "O", "NNN", "WPC", "ADC", "VICI"]  # 5 Top Dividend REITs
 
-ALL_OPTIONS = DEFAULT_STOCKS + [
-    "GOLD", "RGLD", "SAND", "STAG", "EPR", "SRC", "OR", "PAAS", "KGC"
-]
+ALL_OPTIONS = DEFAULT_STOCKS + ["GOLD", "RGLD", "SAND", "STAG", "EPR", "SRC", "OR", "PAAS", "KGC"]
 
 # -------------------------------
-# USER INPUT
+# INPUT SECTION WITH SESSION STATE
 # -------------------------------
-st.subheader("Enter Stock Tickers")
+if "tickers_input" not in st.session_state:
+    st.session_state["tickers_input"] = ", ".join(DEFAULT_STOCKS)
+
 ticker_input = st.text_area(
     "Enter tickers (one per line or comma-separated):",
-    value=", ".join(DEFAULT_STOCKS),  # Pre-fill defaults
+    value=st.session_state["tickers_input"],
     height=120,
-    placeholder="AEM, WPM, FNV, NEM, O, NNN, WPC, ADC, VICI"
+    key="tickers_input"
 )
 
-# Parse input
-tickers = [t.strip().upper() for t in ticker_input.replace('\n', ',').split(',') if t.strip()]
+if st.button("Reset to default tickers"):
+    st.session_state["tickers_input"] = ", ".join(DEFAULT_STOCKS)
+    st.experimental_rerun()
+
+# Parse tickers
+if ticker_input.strip():
+    tickers = [t.strip().upper() for t in ticker_input.replace("\n", ",").split(",") if t.strip()]
+else:
+    tickers = DEFAULT_STOCKS.copy()
 
 if not tickers:
     st.warning("Please enter at least one ticker.")
@@ -49,7 +49,7 @@ if not tickers:
 st.success(f"Analyzing {len(tickers)} stock(s): {', '.join(tickers)}")
 
 # -------------------------------
-# FETCH DATA
+# FETCH DATA FUNCTION
 # -------------------------------
 @st.cache_data(ttl=1800)
 def fetch_data(tickers_list):
@@ -71,7 +71,7 @@ def fetch_data(tickers_list):
                 rsi_series = 100 - (100 / (1 + rs))
                 current_rsi = round(rsi_series.iloc[-1], 1)
 
-            # Official dividend data
+            # Dividend data
             yield_pct = round((info.get("trailingAnnualDividendYield") or 0) * 100, 2)
             annual_div = round(info.get("trailingAnnualDividendRate") or 0, 3)
 
@@ -88,11 +88,10 @@ def fetch_data(tickers_list):
                 "Profit Margin %": round((info.get("profitMargins") or 0) * 100, 1),
             })
         except Exception as e:
-            data.append({
-                "Ticker": t, "Name": "N/A", "Price": None, "RSI (9)": None,
-                "Yield %": 0, "Annual Div $": 0, "P/E": None, "P/B": None,
-                "ROE %": None, "Profit Margin %": None
-            })
+            st.warning(f"{t}: Data error ({e})")
+            data.append({"Ticker": t, "Name": "N/A", "Price": None, "RSI (9)": None,
+                         "Yield %": 0, "Annual Div $": 0, "P/E": None, "P/B": None,
+                         "ROE %": None, "Profit Margin %": None})
     return pd.DataFrame(data).set_index("Ticker")
 
 df = fetch_data(tickers)
@@ -124,7 +123,7 @@ def calc_score(row):
 df["Fundamental Score"] = df.apply(calc_score, axis=1)
 
 # -------------------------------
-# 1. RELATIVE FAIR VALUE
+# RELATIVE FAIR VALUE
 # -------------------------------
 st.subheader("1. Relative Fair Value")
 peer_pe = df["P/E"].median()
@@ -143,7 +142,7 @@ st.dataframe(val_df.style.format({
 }, na_rep="—").background_gradient(subset=["Upside %"], cmap="RdYlGn"), use_container_width=True)
 
 # -------------------------------
-# 2. MAIN TABLE
+# MAIN TABLE
 # -------------------------------
 st.subheader("2. Key Metrics & Smart Score")
 cols = ["RSI (9)", "Yield %", "Annual Div $", "P/E", "P/B", "ROE %", "Profit Margin %", "Fundamental Score"]
@@ -153,9 +152,9 @@ st.dataframe(df[cols].style.format({
 }, na_rep="—"), use_container_width=True)
 
 # -------------------------------
-# 3. RANKING CHART
+# RANKING CHART
 # -------------------------------
-st.subheader("3. Best Opportunities")
+st.subheader("3. Best Opportunities – Ranked by Smart Score")
 scored = df.dropna(subset=["Fundamental Score"]).sort_values("Fundamental Score", ascending=False)
 if not scored.empty:
     colors = ["#1e7b1e" if s >= 80 else "#f39c12" if s >= 65 else "#c0392b" for s in scored["Fundamental Score"]]
@@ -168,10 +167,8 @@ if not scored.empty:
         ax.text(s + 1, i, f"{s:.1f}", va='center', fontweight='bold')
     st.pyplot(fig)
 
-st.success("RSI (9-day) • Default = 4 Mining + 5 REITs • Works globally including .IS")
+st.success("RSI (9-day) active • Default = 4 Mining + 5 REITs • Works globally including .IS")
 st.caption("Data: Yahoo Finance • Real-time • Not financial advice • 2025")
-
-
 
 
 
