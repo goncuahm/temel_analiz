@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 # -------------------------------
 st.set_page_config(page_title="Stock Fair Value Calculator", layout="wide", page_icon="gold_bar")
 st.title("Discounted Dividend and Free Cash Flow Calculator")
-st.markdown("### Gold & Silver Royalty + Producer Valuation Tool")
+# st.markdown("### Example: Gold & Silver Royalty + Producer Valuation Tool")
 
 # -------------------------------
 # SIDEBAR
