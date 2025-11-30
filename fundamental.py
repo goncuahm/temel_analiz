@@ -79,8 +79,8 @@ def fetch_data(tickers):
             # RSI
             hist = stock.history(period="60d")
             delta = hist["Close"].diff()
-            gain = delta.clip(lower=0).rolling(14).mean()
-            loss = -delta.clip(upper=0).rolling(14).mean()
+            gain = delta.clip(lower=0).rolling(10).mean()
+            loss = -delta.clip(upper=0).rolling(10).mean()
             rs = gain / loss
             rsi = 100 - (100 / (1 + rs))
             current_rsi = round(rsi.iloc[-1], 1) if len(rsi) > 0 else None
@@ -106,7 +106,7 @@ def fetch_data(tickers):
             })
         except Exception as e:
             st.warning(f"{t}: {e}")
-            data.append({"Ticker": t, "Name": "Error", "Price": None, "RSI (14)": None, "Yield %": 0,
+            data.append({"Ticker": t, "Name": "Error", "Price": None, "RSI (10)": None, "Yield %": 0,
                          "Annual Div $": 0, "P/E": None, "P/B": None, "ROE %": None, "Profit Margin %": None})
     return pd.DataFrame(data).set_index("Ticker")
 
