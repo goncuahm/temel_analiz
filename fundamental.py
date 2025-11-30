@@ -14,16 +14,16 @@ st.title("📊 Fundamental Analysis & Fair Value Estimator")
 # USER INPUTS
 # -------------------------------
 st.sidebar.header("⚙️ Model Parameters")
-default_tickers = ["AYEN.IS", "BASGZ.IS"]
+default_tickers = ["AEM", "O"]
 
 tickers_input = st.sidebar.text_input(
-    "Enter company tickers separated by commas (e.g. AYEN.IS, BASGZ.IS):",
+    "Enter company tickers separated by commas (e.g. AEM, O):",
     ", ".join(default_tickers)
 )
 companies = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
 
 st.sidebar.write("---")
-discount_rate_input = st.sidebar.number_input("Discount Rate (e.g. 0.20 = 20%)", value=0.20, step=0.01)
+discount_rate_input = st.sidebar.number_input("Discount Rate (e.g. 0.05 = 5%)", value=0.05, step=0.01)
 terminal_growth_input = st.sidebar.number_input("Terminal Growth Rate", value=0.03, step=0.005)
 
 st.sidebar.write("---")
