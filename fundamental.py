@@ -203,7 +203,9 @@ with st.sidebar:
         st.cache_data.clear()
         st.rerun()
 
-    st.caption("Kaynak: Yahoo Finance • Gerçek zamanlı • Yatırım tavsiyesi değildir.")
+    st.markdown("---")
+    st.markdown("### ℹ️ Not")
+    st.caption("Temettü verimi, Yahoo'nun `.IS` hisseleri için hatalı döndürdüğü `trailingAnnualDividendYield` yerine **son 12 ay temettü toplamı / güncel fiyat** formülüyle hesaplanmaktadır.")
 
 # ─────────────────────────────────────────────
 # DATA FETCHING
@@ -242,22 +244,33 @@ def fetch_all(tickers_list):
 
             # Last 3 years of annual dividends
             annual_divs = {}
+            trailing_12m_div = 0.0
             if not divs.empty:
                 divs.index = divs.index.tz_localize(None) if divs.index.tz else divs.index
                 for yr in [2022, 2023, 2024]:
                     yr_divs = divs[divs.index.year == yr]
                     annual_divs[yr] = round(yr_divs.sum(), 4) if not yr_divs.empty else None
+                # Trailing 12-month dividends: sum all payments in last 365 days
+                cutoff = divs.index[-1] - pd.Timedelta(days=365)
+                trailing_12m_div = round(divs[divs.index >= cutoff].sum(), 4)
 
-            div_yield = round((info.get("trailingAnnualDividendYield") or 0) * 100, 2)
-            annual_div_rate = info.get("trailingAnnualDividendRate") or 0
+            # Calculate yield ourselves: trailing 12m dividends / current price
+            # Yahoo's trailingAnnualDividendYield is unreliable for .IS stocks
+            annual_div_rate = trailing_12m_div if trailing_12m_div > 0 else (info.get("trailingAnnualDividendRate") or 0)
+            if annual_div_rate > 0 and price and price > 0:
+                div_yield = round(annual_div_rate / price * 100, 2)
+            else:
+                # Last fallback: use Yahoo's field if available and non-zero
+                yf_yield = (info.get("trailingAnnualDividendYield") or 0) * 100
+                div_yield = round(yf_yield, 2)
 
             rows.append({
                 "Ticker":        t,
                 "Şirket":        (info.get("longName") or t)[:28],
                 "Fiyat":         price,
                 "RSI (14)":      rsi,
-                "Temettü V. %":  div_yield,
-                "Yıllık Tem.":   round(annual_div_rate, 3),
+                "Temettü V. %":  div_yield,           # calculated: trailing_12m / price
+                "Yıllık Tem.":   round(float(annual_div_rate), 3),
                 "Tem. 2022":     annual_divs.get(2022),
                 "Tem. 2023":     annual_divs.get(2023),
                 "Tem. 2024":     annual_divs.get(2024),
