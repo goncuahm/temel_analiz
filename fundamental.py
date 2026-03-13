@@ -211,10 +211,54 @@ with st.sidebar:
 # DATA FETCHING
 # ─────────────────────────────────────────────
 @st.cache_data(ttl=1800, show_spinner=False)
+def fetch_bist100_returns():
+    """Fetch BIST-100 weekly returns for beta calculation."""
+    try:
+        xu = yf.Ticker("XU100.IS")
+        hist = xu.history(period="2y")
+        if hist.empty:
+            return None
+        weekly = hist["Close"].resample("W").last().dropna()
+        return weekly.pct_change().dropna()
+    except Exception:
+        return None
+
+
+def calc_bist_beta(stock_hist, market_returns):
+    """
+    Calculate beta of a stock vs BIST-100 using 2-year weekly returns.
+    β = Cov(stock, market) / Var(market)
+    Falls back to 1.0 if data is insufficient.
+    """
+    if market_returns is None or stock_hist is None or stock_hist.empty:
+        return 1.0
+    try:
+        weekly_stock = stock_hist["Close"].resample("W").last().dropna()
+        stock_ret = weekly_stock.pct_change().dropna()
+        # Align on common dates
+        combined = pd.concat([stock_ret, market_returns], axis=1, join="inner").dropna()
+        if len(combined) < 20:
+            return 1.0
+        combined.columns = ["stock", "market"]
+        cov = combined["stock"].cov(combined["market"])
+        var = combined["market"].var()
+        if var == 0:
+            return 1.0
+        beta = round(cov / var, 3)
+        # Sanity clamp: beta outside [-1, 4] is almost certainly data noise
+        return max(-1.0, min(beta, 4.0))
+    except Exception:
+        return 1.0
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
 def fetch_all(tickers_list):
     rows = []
     hist_data = {}
     div_data = {}
+
+    # Fetch BIST-100 once for beta calculations
+    market_returns = fetch_bist100_returns()
 
     for t in tickers_list:
         try:
@@ -228,6 +272,9 @@ def fetch_all(tickers_list):
             # ── Price history (2 years) ──
             hist = stk.history(period="2y")
             hist_data[t] = hist
+
+            # ── Beta vs BIST-100 (calculated from weekly returns) ──
+            bist_beta = calc_bist_beta(hist, market_returns)
 
             # ── RSI (14-day) ──
             rsi = None
@@ -284,7 +331,7 @@ def fetch_all(tickers_list):
                 "FAVÖK Marjı %": round((info.get("ebitdaMargins") or 0) * 100, 2),
                 "Borç/Özkaynak": round(info.get("debtToEquity") or 0, 2),
                 "Cari Oran":     round(info.get("currentRatio") or 0, 2),
-                "Beta":          round(info.get("beta") or 1.0, 2),
+                "Beta (BIST-100)": bist_beta,
                 "Piy. Değ. (Mn TL)": round((info.get("marketCap") or 0) / 1e6, 0),
                 "Sektör":        info.get("sector", "—"),
             })
@@ -296,7 +343,7 @@ def fetch_all(tickers_list):
                 "F/K": None, "FD/FAVÖK": None, "PD/DD": None,
                 "ROE %": None, "ROA %": None, "Net Kar Marjı %": None,
                 "Brüt Marj %": None, "FAVÖK Marjı %": None,
-                "Borç/Özkaynak": None, "Cari Oran": None, "Beta": None,
+                "Borç/Özkaynak": None, "Cari Oran": None, "Beta (BIST-100)": 1.0,
                 "Piy. Değ. (Mn TL)": None, "Sektör": "—",
             })
 
@@ -324,7 +371,7 @@ if valid.empty:
 # ─────────────────────────────────────────────
 def calc_ddm(row, rf, erp, g_default):
     """Gordon Growth DDM: P0 = D1 / (Ke - g)"""
-    beta = row["Beta"] if pd.notna(row["Beta"]) and row["Beta"] > 0 else 1.0
+    beta = row["Beta (BIST-100)"] if pd.notna(row["Beta (BIST-100)"]) and row["Beta (BIST-100)"] > 0 else 1.0
     ke = rf + beta * erp
 
     # Use most recent available dividend
@@ -544,6 +591,68 @@ with tab2:
     </div>
     """.format(rf * 100, erp * 100, g_default * 100), unsafe_allow_html=True)
 
+    with st.expander("📖 DDM Parametreleri — Detaylı Açıklama", expanded=False):
+        st.markdown("""
+#### Temettü İskonto Modeli (Gordon Growth Model) Nedir?
+
+Gordon Growth Model (GGM), bir hisse senedinin **adil değerini** temettü ödemeleri üzerinden hesaplar.
+Temel fikir şudur: bir hissenin değeri, gelecekte ödeyeceği tüm temettülerin bugünkü değerine eşittir.
+
+---
+
+#### 📌 Parametreler
+
+| Sembol | Adı | Bu Uygulamada Nasıl Hesaplanıyor? |
+|--------|-----|----------------------------------|
+| **D₀** | Son ödenen temettü | Yahoo Finance temettü geçmişinden alınır. Öncelik sırası: 2024 → 2023 → 2022 → son 12 ay toplamı |
+| **D₁** | Beklenen bir sonraki yıl temettüsü | D₁ = D₀ × (1 + g) |
+| **g** | Uzun vadeli temettü büyüme oranı | 2022–2024 arası 2 yıllık CAGR hesaplanır: g = (D₂₀₂₄/D₂₀₂₂)^(1/2) − 1. Geçmiş veri yoksa sidebar'daki varsayılan g kullanılır. %2 minimum, %25 maksimum ile sınırlandırılır. |
+| **Ke** | Öz sermaye maliyeti (iskonto oranı) | CAPM formülüyle: **Ke = Rf + β × ERP** |
+| **Rf** | Risksiz oran | Türkiye 10 yıllık TL devlet tahvili getirisi. Sidebar'dan ayarlanabilir (varsayılan %28). |
+| **β (Beta)** | Sistematik risk katsayısı | **BIST-100'e (XU100.IS) karşı hesaplanır** — 2 yıllık haftalık getirilerden Cov(hisse, BIST-100) / Var(BIST-100) formülüyle. Yahoo'nun verdiği beta S&P 500 bazlıdır, Türk hisseleri için hatalı olur. |
+| **ERP** | Piyasa risk primi | Beklenen piyasa getirisi eksi risksiz oran. Damodaran'ın Türkiye ERP tahmini baz alınır. Sidebar'dan ayarlanabilir (varsayılan %9). |
+
+---
+
+#### ⚙️ Beta Hesaplama Yöntemi
+
+```
+β = Cov(r_hisse, r_BIST100) / Var(r_BIST100)
+```
+
+- **Periyot:** Son 2 yıl haftalık kapanış fiyatları
+- **Benchmark:** XU100.IS (BIST-100 endeksi)
+- **β > 1:** Hisse piyasadan daha volatil (yüksek risk, yüksek beklenen getiri)
+- **β < 1:** Hisse piyasadan daha stabil (düşük risk, düşük beklenen getiri)
+- **β = 1:** Piyasa ile aynı hareket
+- Veri yetersizse β = 1,0 varsayılır (piyasa ortalaması)
+
+---
+
+#### ⚠️ DDM Sınırlamaları
+
+- **g ≥ Ke olursa model çalışmaz** — payda negatif olur, sonuç anlamsızlaşır.
+  Bu durum enflasyonun çok yüksek olduğu dönemlerde sık görülür.
+- **Temettü ödemiyorsa uygulanamaz** — büyüme şirketleri (HUNER gibi) için FCF bazlı DCF tercih edilmelidir.
+- **Tek dönem varsayımı** — g'nin sonsuza kadar sabit kalacağını varsayar; gerçekte büyüme zamanla yavaşlar.
+- **Türkiye özelinde:** Yüksek enflasyon ortamında **reel g** kullanmak daha tutarlı sonuç verebilir.
+  Nominal g yerine: g_reel = (1 + g_nominal) / (1 + enflasyon) − 1
+
+---
+
+#### 📊 Sonucu Okuma
+
+| Durum | Yorum |
+|-------|-------|
+| **DDM Adil Değer > Mevcut Fiyat** | Hisse iskontolu işlem görüyor → potansiyel alım fırsatı |
+| **DDM Adil Değer < Mevcut Fiyat** | Hisse primli işlem görüyor → ihtiyatlı yaklaşım |
+| **DDM Uygulanamaz** | Temettü geçmişi yok veya g ≥ Ke — alternatif yöntem kullanılmalı |
+
+> DDM tek başına yeterli değildir. EV/EBITDA çarpanları ve FCF analizi ile desteklenmelidir.
+        """)
+
+
+
     # DDM cards
     cols = st.columns(min(len(ddm_df), 3))
     for i, (ticker, row) in enumerate(ddm_df.iterrows()):
@@ -697,7 +806,7 @@ with tab3:
     st.markdown('<div class="section-header">Tüm Finansal Rasyolar</div>', unsafe_allow_html=True)
     ratio_cols = ["Şirket", "F/K", "FD/FAVÖK", "PD/DD", "ROE %", "ROA %",
                   "Net Kar Marjı %", "FAVÖK Marjı %", "Borç/Özkaynak", "Cari Oran",
-                  "Temettü V. %", "Beta"]
+                  "Temettü V. %", "Beta (BIST-100)"]
     ratio_table = valid[ratio_cols].copy()
 
     def highlight_ratio(col):
@@ -804,7 +913,7 @@ with tab4:
 
     # Kaldıraç riski
     st.markdown('<div class="section-header">Kaldıraç & Risk Profili</div>', unsafe_allow_html=True)
-    lev_cols = ["Borç/Özkaynak", "Cari Oran", "Beta"]
+    lev_cols = ["Borç/Özkaynak", "Cari Oran", "Beta (BIST-100)"]
     lev_data = valid[lev_cols + ["Şirket"]].copy()
 
     def style_leverage(val, col):
@@ -813,7 +922,7 @@ with tab4:
             return "color:#00e676" if val < 50 else "color:#f39c12" if val < 150 else "color:#ff5252"
         if col == "Cari Oran":
             return "color:#00e676" if val > 1.5 else "color:#f39c12" if val > 1.0 else "color:#ff5252"
-        if col == "Beta":
+        if col == "Beta (BIST-100)":
             return "color:#00e676" if val < 0.8 else "color:#f39c12" if val < 1.2 else "color:#ff5252"
         return ""
 
@@ -821,7 +930,7 @@ with tab4:
     for col in lev_cols:
         styled_lev = styled_lev.applymap(lambda v: style_leverage(v, col), subset=[col])
     styled_lev = styled_lev.format(
-        {"Borç/Özkaynak": "{:.1f}", "Cari Oran": "{:.2f}x", "Beta": "{:.2f}"},
+        {"Borç/Özkaynak": "{:.1f}", "Cari Oran": "{:.2f}x", "Beta (BIST-100)": "{:.2f}"},
         na_rep="—"
     ).set_properties(**{"font-family": "IBM Plex Mono, monospace", "font-size": "0.85rem"})
     st.dataframe(styled_lev, use_container_width=True)
@@ -950,6 +1059,6 @@ with tab5:
 st.markdown("---")
 st.markdown("""
 <div style="text-align:center; font-family:'IBM Plex Mono',monospace; font-size:0.72rem; color:#2a4a6a; padding:10px 0;">
-    Veri: Yahoo Finance • DDM: Gordon Growth Model • Yatırım tavsiyesi değildir • 2025
+    Veri: Yahoo Finance • Beta: BIST-100 (XU100.IS) bazlı, 2 yıllık haftalık getirilerden hesaplanmıştır • DDM: Gordon Growth Model • Yatırım tavsiyesi değildir • 2025
 </div>
 """, unsafe_allow_html=True)
