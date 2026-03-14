@@ -352,19 +352,12 @@ def calc_payout(row):
 
 def calc_g(row, g_default, rf):
     """
-    g = 0.50 × g_roic + 0.50 × g_hist   (equal weight blend)
+    Returns raw g components — g_hist is the default.
+    User can override g per stock via number_input in the UI.
 
-    g_roic = ROIC × (1 - payout)
-             payout missing → assume 50% (industry convention)
     g_hist = longest available dividend CAGR (2yr preferred, 1yr fallback)
-
-    Fallback hierarchy:
-      Both available → 50/50 blend
-      Only g_roic    → g_roic alone
-      Only g_hist    → g_hist alone
-      Neither        → sidebar default
-
-    Cap: max(2%, min(g, Rf - 3%))
+    g_roic = ROIC × (1 − payout)  [reference only, shown in table]
+    Cap applied to g_hist: max(2%, min(g_hist, Rf − 3%))
     """
     cap_upper = max(rf - 0.03, 0.02)
     cap_lower = 0.02
@@ -372,12 +365,11 @@ def calc_g(row, g_default, rf):
     detail = {"g_roic": None, "g_hist": None, "Payout": None,
               "ROIC %": None, "ROIC Yöntemi": None, "Payout Yöntemi": None}
 
-    # g_roic: ROIC x (1 - payout)
+    # ── g_roic: ROIC × (1 − payout) — reference only ──
     roic, roic_detail = calc_roic(row)
     detail["ROIC %"]       = roic_detail.get("ROIC %")
     detail["ROIC Yöntemi"] = roic_detail.get("ROIC Yöntemi")
 
-    g_roic = None
     if roic is not None and roic > 0:
         payout, pay_method = calc_payout(row)
         if payout is None:
@@ -385,11 +377,10 @@ def calc_g(row, g_default, rf):
             pay_method = "%50 varsayılan"
         detail["Payout"]         = round(payout * 100, 1)
         detail["Payout Yöntemi"] = pay_method
-        reinvestment = 1 - payout
-        g_roic       = roic * reinvestment
+        g_roic = roic * (1 - payout)
         detail["g_roic"] = round(g_roic * 100, 2)
 
-    # g_hist: longest available dividend CAGR
+    # ── g_hist: default g — longest available CAGR ──
     g_hist = None
     div_pairs = [
         (row.get("Tem. 2024"), row.get("Tem. 2022"), 2),
@@ -402,22 +393,15 @@ def calc_g(row, g_default, rf):
             detail["g_hist"] = round(g_hist * 100, 2)
             break
 
-    # Equal-weight 50/50 blend
-    if g_roic is not None and g_hist is not None:
-        g_blend = 0.50 * g_roic + 0.50 * g_hist
-        source  = f"ROIC(50%) + Hist.CAGR(50%) [{detail['ROIC Yöntemi']}]"
-    elif g_roic is not None:
-        g_blend = g_roic
-        source  = f"Sadece ROIC [{detail['ROIC Yöntemi']}]"
-    elif g_hist is not None:
-        g_blend = g_hist
-        source  = "Sadece Tarihsel CAGR"
+    # g_hist is default; fallback to sidebar default
+    if g_hist is not None:
+        g_default_val = min(max(g_hist, cap_lower), cap_upper)
+        source = "Tarihsel Temettü CAGR"
     else:
-        g_blend = g_default
-        source  = "Varsayılan (sidebar)"
+        g_default_val = g_default
+        source = "Varsayılan (sidebar)"
 
-    g_final = min(max(g_blend, cap_lower), cap_upper)
-    return g_final, source, detail
+    return g_default_val, source, detail
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -823,14 +807,14 @@ with tab2:
 
     # Formula display
     st.markdown("""
-    <div style="background:#0d1f35; border:1px solid #1a3a5c; border-radius:6px; padding:14px 20px; margin-bottom:20px; font-family:'IBM Plex Mono',monospace;">
+    <div style="background:#0d1f35; border:1px solid #1a3a5c; border-radius:6px; padding:14px 20px; margin-bottom:12px; font-family:'IBM Plex Mono',monospace;">
         <span style="color:#4a7a9b; font-size:0.75rem;">FORMÜL</span><br>
         <span style="color:#e8f4ff; font-size:1.1rem;">P₀ = D₁ / (Ke − g) &nbsp;|&nbsp; D₁ = D₀ × (1+g) &nbsp;|&nbsp; Ke = Rf + β × ERP</span><br>
         <span style="color:#4a7a9b; font-size:0.75rem; margin-top:6px; display:block;">
-            Rf = {:.1f}% &nbsp;|&nbsp; ERP = {:.1f}% &nbsp;|&nbsp; g = Geçmiş temettü büyümesi (yoksa {:.1f}%)
+            Rf = {:.1f}% &nbsp;|&nbsp; ERP = {:.1f}% &nbsp;|&nbsp; g varsayılan = g_hist (tarihsel CAGR)
         </span>
     </div>
-    """.format(rf * 100, erp * 100, g_default * 100), unsafe_allow_html=True)
+    """.format(rf * 100, erp * 100), unsafe_allow_html=True)
 
     with st.expander("📖 DDM Parametreleri — Detaylı Açıklama", expanded=False):
         st.markdown("""
@@ -845,39 +829,32 @@ Temel fikir şudur: bir hissenin değeri, gelecekte ödeyeceği tüm temettüler
 
 | Sembol | Adı | Bu Uygulamada Nasıl Hesaplanıyor? |
 |--------|-----|----------------------------------|
-| **D₀** | Son ödenen temettü | Yahoo Finance temettü geçmişinden alınır. Öncelik sırası: 2024 → 2023 → 2022 → son 12 ay toplamı |
+| **D₀** | Son ödenen temettü | Yahoo Finance temettü geçmişinden alınır. Öncelik: 2024 → 2023 → 2022 → son 12 ay toplamı |
 | **D₁** | Beklenen bir sonraki yıl temettüsü | D₁ = D₀ × (1 + g) |
-| **g** | Uzun vadeli temettü büyüme oranı | **g = 0.50 × g_roic + 0.50 × g_hist** — eşit ağırlıklı blend. g_roic = ROIC × (1−Payout), payout bilinmiyorsa %50 varsayılır. g_hist = mevcut en uzun temettü CAGR (2 yıl tercihli). Her ikisi de tabloda ayrı ayrı gösterilir. Sadece biri varsa o kullanılır; hiçbiri yoksa sidebar varsayılanı. **Cap:** min(max(g, %2), Rf−3%). |
-| **Ke** | Öz sermaye maliyeti (iskonto oranı) | CAPM formülüyle: **Ke = Rf + β × ERP** |
-| **Rf** | Risksiz oran | Türkiye 10 yıllık TL devlet tahvili getirisi. Sidebar'dan ayarlanabilir (varsayılan %28). |
-| **β (Beta)** | Sistematik risk katsayısı | **BIST-100'e (XU100.IS) karşı hesaplanır** — 2 yıllık haftalık getirilerden β_raw = Cov(hisse, BIST-100) / Var(BIST-100). Ardından **Blume düzeltmesi** uygulanır: β_adj = 0.67 × β_raw + 0.33 × 1.0 — bu Bloomberg ve Merrill Lynch'in standart yaklaşımıdır; beta'yı piyasa ortalaması olan 1.0'a doğru çeker çünkü şirketler zamanla sistematik riske yakınsar. Yahoo'nun verdiği beta S&P 500 bazlıdır, Türk hisseleri için kullanılamaz. |
-| **ERP** | Piyasa risk primi | Beklenen piyasa getirisi eksi risksiz oran. Damodaran'ın Türkiye ERP tahmini baz alınır. Sidebar'dan ayarlanabilir (varsayılan %9). |
+| **g** | Uzun vadeli büyüme oranı | **Varsayılan: g_hist** (tarihsel temettü CAGR, 2 yıl tercihli). **Referans: ROIC** = EBIT×(1−%25)/(PiyasaDeğ+NetBorç) gösterilir ama hesaplamaya katılmaz. Kullanıcı tablodan her hisse için farklı g girebilir. **Cap:** min(max(g, %2), Rf−3%). |
+| **Ke** | Öz sermaye maliyeti | CAPM: **Ke = Rf + β × ERP** |
+| **Rf** | Risksiz oran | 10 yıllık TL DİBS getirisi. Sidebar'dan ayarlanır (varsayılan %28). |
+| **β (Beta)** | Sistematik risk | BIST-100 (XU100.IS) karşısında 2 yıllık haftalık getirilerden hesaplanır. Blume düzeltmesi: β_adj = 0.67×β_raw + 0.33×1.0 |
+| **ERP** | Piyasa risk primi | Damodaran Türkiye ERP baz değeri. Sidebar'dan ayarlanır (varsayılan %9). |
 
 ---
 
-#### ⚙️ Beta Hesaplama Yöntemi
+#### ⚙️ Beta: Blume Düzeltmesi
 
 ```
-β = Cov(r_hisse, r_BIST100) / Var(r_BIST100)
+β_raw = Cov(r_hisse, r_BIST100) / Var(r_BIST100)
+β_adj = 0.67 × β_raw + 0.33 × 1.0
 ```
-
-- **Periyot:** Son 2 yıl haftalık kapanış fiyatları
-- **Benchmark:** XU100.IS (BIST-100 endeksi)
-- **β > 1:** Hisse piyasadan daha volatil (yüksek risk, yüksek beklenen getiri)
-- **β < 1:** Hisse piyasadan daha stabil (düşük risk, düşük beklenen getiri)
-- **β = 1:** Piyasa ile aynı hareket
-- Veri yetersizse β = 1,0 varsayılır (piyasa ortalaması)
+Bloomberg ve Merrill Lynch standart yöntemi — beta'yı piyasa ortalaması 1.0'a doğru çeker.
 
 ---
 
 #### ⚠️ DDM Sınırlamaları
 
-- **g ≥ Ke olursa model çalışmaz** — payda negatif olur, sonuç anlamsızlaşır.
-  Bu durum enflasyonun çok yüksek olduğu dönemlerde sık görülür.
-- **Temettü ödemiyorsa uygulanamaz** — büyüme şirketleri (HUNER gibi) için FCF bazlı DCF tercih edilmelidir.
-- **Tek dönem varsayımı** — g'nin sonsuza kadar sabit kalacağını varsayar; gerçekte büyüme zamanla yavaşlar.
-- **Türkiye özelinde:** Yüksek enflasyon ortamında **reel g** kullanmak daha tutarlı sonuç verebilir.
-  Nominal g yerine: g_reel = (1 + g_nominal) / (1 + enflasyon) − 1
+- **g ≥ Ke:** Model çalışmaz, payda negatif olur.
+- **Temettü yoksa:** DDM uygulanamaz — FCF bazlı DCF tercih edilmeli.
+- **Tek dönem varsayımı:** g'nin sonsuza sabit kaldığı varsayılır.
+- **Yüksek enflasyon:** Reel g = (1+g_nominal)/(1+enflasyon) − 1 daha tutarlı olabilir.
 
 ---
 
@@ -885,121 +862,156 @@ Temel fikir şudur: bir hissenin değeri, gelecekte ödeyeceği tüm temettüler
 
 | Durum | Yorum |
 |-------|-------|
-| **DDM Adil Değer > Mevcut Fiyat** | Hisse iskontolu işlem görüyor → potansiyel alım fırsatı |
-| **DDM Adil Değer < Mevcut Fiyat** | Hisse primli işlem görüyor → ihtiyatlı yaklaşım |
-| **DDM Uygulanamaz** | Temettü geçmişi yok veya g ≥ Ke — alternatif yöntem kullanılmalı |
+| **Adil Değer > Fiyat** | İskontolu — potansiyel alım fırsatı |
+| **Adil Değer < Fiyat** | Primli — ihtiyatlı yaklaşım |
+| **g ≥ Ke** | Model çalışmıyor — alternatif yöntem kullanılmalı |
 
-> DDM tek başına yeterli değildir. EV/EBITDA çarpanları ve FCF analizi ile desteklenmelidir.
+> DDM tek başına yeterli değildir. EV/EBITDA ve FCF analizi ile desteklenmelidir.
         """)
 
-
-
-    # DDM cards
-    cols = st.columns(min(len(ddm_df), 3))
-    for i, (ticker, row) in enumerate(ddm_df.iterrows()):
-        fair = row["DDM Adil Değer"]
-        price = row["Mevcut Fiyat"]
-        upside = row["Potansiyel (%)"]
-
-        if fair is None:
-            with cols[i % 3]:
-                st.markdown(f"""
-                <div class="ddm-result overvalued">
-                    <div class="ticker-label">{ticker}</div>
-                    <div style="color:#ff5252; font-family:'IBM Plex Mono',monospace; font-size:1rem; margin-top:6px;">
-                        ⚠ Temettü verisi yetersiz — DDM uygulanamaz
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
-            continue
-
-        is_over = upside is not None and upside < 0
-        card_class = "ddm-result overvalued" if is_over else "ddm-result"
-        arrow = "🔴 Aşırı Değerli" if is_over else "🟢 İskontolu"
-        up_color = "#ff5252" if is_over else "#00e676"
-        roic_val = row.get("ROIC %")
-        payout_val = row.get("Payout %")
-        g_src = row.get("g Yöntemi", "—")
-
-        with cols[i % 3]:
-            st.markdown(f"""
-            <div class="{card_class}">
-                <div class="ticker-label">{ticker}</div>
-                <div class="fair-value">{fair:,.2f} TL</div>
-                <div style="font-size:0.78rem; color:#4a7a9b; margin-top:4px;">DDM Adil Değer</div>
-                <div style="margin-top:10px; display:grid; grid-template-columns:1fr 1fr; gap:6px; font-family:'IBM Plex Mono',monospace; font-size:0.80rem;">
-                    <div><span style="color:#4a7a9b;">Mevcut:</span> <span style="color:#e8f4ff;">{price:,.2f} TL</span></div>
-                    <div><span style="color:#4a7a9b;">D₀:</span> <span style="color:#e8f4ff;">{row['D₀ (TL)'] or '—'} TL</span></div>
-                    <div><span style="color:#4a7a9b;">g:</span> <span style="color:#e8f4ff;">%{row['g (%)']}</span></div>
-                    <div><span style="color:#4a7a9b;">Ke:</span> <span style="color:#e8f4ff;">%{row['Ke (%)']}</span></div>
-                    <div><span style="color:#4a7a9b;">ROIC:</span> <span style="color:#e8f4ff;">{f'%{roic_val:.1f}' if roic_val else '—'}</span></div>
-                    <div><span style="color:#4a7a9b;">Payout:</span> <span style="color:#e8f4ff;">{f'%{payout_val:.0f}' if payout_val else '—'}</span></div>
-                </div>
-                <div style="margin-top:8px; font-family:'IBM Plex Mono',monospace; font-size:0.68rem; color:#3a6a8a; border-top:1px solid #1a3a5c; padding-top:6px;">
-                    g yöntemi: {g_src}
-                </div>
-                <div style="margin-top:8px; font-family:'IBM Plex Mono',monospace; font-weight:600; font-size:1.0rem; color:{up_color};">
-                    {arrow} &nbsp; {f'%{upside:+.1f}' if upside else '—'}
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-
-    # DDM summary table — full g breakdown
-    st.markdown('<div class="section-header">DDM Özet & g Hesaplama Detayı</div>', unsafe_allow_html=True)
-    display_ddm = ddm_df.copy()
-
-    display_ddm["Mevcut Fiyat"]   = display_ddm["Mevcut Fiyat"].map(
-        lambda x: f"{x:,.2f} TL" if pd.notna(x) else "—")
-    display_ddm["DDM Adil Değer"] = display_ddm["DDM Adil Değer"].map(
-        lambda x: f"{x:,.2f} TL" if pd.notna(x) else "—")
-    display_ddm["D₀ (TL)"] = display_ddm["D₀ (TL)"].map(
-        lambda x: f"{x:.3f}" if pd.notna(x) else "—")
-
-    def color_upside(val):
-        if pd.isna(val) or val == "—": return ""
-        try:
-            v = float(str(val).replace("%", "").replace("+", ""))
-            if v >= 20:  return "background-color:#0a2a12; color:#00e676"
-            if v >= 0:   return "background-color:#0a1e0a; color:#80e676"
-            if v >= -20: return "background-color:#2a1206; color:#f39c12"
-            return "background-color:#2a0a0a; color:#ff5252"
-        except: return ""
-
-    display_ddm["Potansiyel (%)"] = display_ddm["Potansiyel (%)"].map(
-        lambda x: f"{x:+.1f}%" if pd.notna(x) else "—")
-
-    show_cols = ["D₀ (TL)", "ROIC %", "Payout %", "g_roic %", "g_hist %",
-                 "g (%)", "g Yöntemi", "Ke (%)", "DDM Adil Değer",
-                 "Mevcut Fiyat", "Potansiyel (%)", "Durum"]
-
-    st.dataframe(
-        display_ddm[show_cols].style
-            .applymap(color_upside, subset=["Potansiyel (%)"])
-            .format({"ROIC %": "{:.1f}", "Payout %": "{:.0f}",
-                     "g_roic %": "{:.1f}", "g_hist %": "{:.1f}",
-                     "g (%)": "{:.1f}", "Ke (%)": "{:.1f}"}, na_rep="—")
-            .set_properties(**{"font-family": "IBM Plex Mono, monospace",
-                               "font-size": "0.82rem"}),
-        use_container_width=True
-    )
+    st.markdown('<div class="section-header">DDM Tablosu — g Değerini Düzenleyebilirsiniz</div>', unsafe_allow_html=True)
 
     st.markdown("""
-    <div style="background:#0a0f1a; border:1px solid #1a3a5c; border-radius:4px; padding:10px 14px; margin-top:12px;">
-        <span style="font-family:'IBM Plex Mono',monospace; font-size:0.72rem; color:#4a7a9b;">
-        <b style="color:#5ab4e0;">g hesaplama:</b>
-        g = 0.50 × g_roic + 0.50 × g_hist — eşit ağırlıklı blend.
-        g_roic = ROIC × (1−Payout), payout yoksa %50 varsayılır.
-        Sonuç: min(max(g, %2), Rf−3%) ile sınırlandırılır.
-        &nbsp;|&nbsp;
-        <b style="color:#5ab4e0;">ROIC</b> = EBIT×(1−%25) / (PiyasaDeğeri + NetBorç)
-        &nbsp;|&nbsp;
-        <b style="color:#5ab4e0;">⚠ g ≥ Ke</b> olduğunda model çalışmaz — FD/FAVÖK ile destekleyin.
-        </span>
+    <div style="background:#0a0f1a; border:1px solid #1a3a5c; border-radius:4px; padding:9px 16px; margin-bottom:14px;">
+      <span style="font-family:'IBM Plex Mono',monospace; font-size:0.72rem; color:#4a7a9b;">
+        Varsayılan g = <b style="color:#5ab4e0;">g_hist</b> (tarihsel temettü CAGR).
+        <b style="color:#5ab4e0;">ROIC</b> referans olarak gösterilir.
+        <b style="color:#e8f4ff;">g (%) Giriş</b> sütununa farklı değer girerek adil fiyatı anında güncelleyebilirsiniz.
+        Cap: min(max(g, %2), Rf−3%) = max %{:.1f} uygulanır.
+      </span>
     </div>
-    """, unsafe_allow_html=True)
+    """.format(max(rf - 0.03, 0.02) * 100), unsafe_allow_html=True)
+
+    cap_upper_pct = round(max(rf - 0.03, 0.02) * 100, 1)
+
+    # ── Column header ──
+    hcols = st.columns([1.1, 1.5, 0.75, 0.85, 0.85, 0.95, 0.85, 1.1, 1.0, 1.0])
+    for col, h in zip(hcols, ["Ticker", "Şirket", "D₀ (TL)", "ROIC % (ref)", "g_hist %",
+                                "g (%) Giriş", "Ke %", "Adil Değer", "Fiyat", "Potansiyel"]):
+        col.markdown(
+            f"<div style='font-family:IBM Plex Mono,monospace; font-size:0.68rem; "
+            f"color:#4a7a9b; font-weight:600; text-transform:uppercase; "
+            f"letter-spacing:0.05em; padding-bottom:4px; "
+            f"border-bottom:1px solid #1a3a5c;'>{h}</div>",
+            unsafe_allow_html=True)
+
+    st.markdown("<div style='margin-bottom:4px;'></div>", unsafe_allow_html=True)
+
+    for ticker, row in ddm_df.iterrows():
+        g_hist_val = row.get("g_hist %")    # may be None
+        g_roic_val = row.get("g_roic %")    # reference only
+        d0_val     = row.get("D₀ (TL)")
+        ke_val     = row.get("Ke (%)")
+        price_val  = row.get("Mevcut Fiyat")
+
+        # Default = g_hist; fallback to sidebar default
+        g_input_default = float(g_hist_val) if g_hist_val is not None else round(g_default * 100, 1)
+
+        rcols = st.columns([1.1, 1.5, 0.75, 0.85, 0.85, 0.95, 0.85, 1.1, 1.0, 1.0])
+
+        rcols[0].markdown(
+            f"<div style='font-family:IBM Plex Mono,monospace; font-size:0.85rem; "
+            f"color:#e8f4ff; font-weight:600; padding-top:6px;'>{ticker}</div>",
+            unsafe_allow_html=True)
+
+        sirket = valid.loc[ticker, "Şirket"] if ticker in valid.index else ticker
+        rcols[1].markdown(
+            f"<div style='font-family:IBM Plex Sans,sans-serif; font-size:0.78rem; "
+            f"color:#6a9ec0; padding-top:8px;'>{sirket}</div>",
+            unsafe_allow_html=True)
+
+        rcols[2].markdown(
+            f"<div style='font-family:IBM Plex Mono,monospace; font-size:0.82rem; "
+            f"color:#e8f4ff; padding-top:8px;'>"
+            f"{f"{d0_val:.3f}" if d0_val else "—"}</div>",
+            unsafe_allow_html=True)
+
+        # ROIC — reference, green if available
+        roic_color = "#00e676" if g_roic_val else "#3a5a6a"
+        rcols[3].markdown(
+            f"<div style='font-family:IBM Plex Mono,monospace; font-size:0.82rem; "
+            f"color:{roic_color}; padding-top:8px;'>"
+            f"{f"%{g_roic_val:.1f}" if g_roic_val else "—"}</div>",
+            unsafe_allow_html=True)
+
+        # g_hist — default value, highlighted blue
+        hist_color = "#5ab4e0" if g_hist_val is not None else "#3a5a6a"
+        rcols[4].markdown(
+            f"<div style='font-family:IBM Plex Mono,monospace; font-size:0.82rem; "
+            f"color:{hist_color}; padding-top:8px; font-weight:600;'>"
+            f"{f"%{g_hist_val:.1f}" if g_hist_val is not None else "—"}</div>",
+            unsafe_allow_html=True)
+
+        # Editable g input — defaults to g_hist
+        g_user = rcols[5].number_input(
+            label="g",
+            min_value=0.0,
+            max_value=float(cap_upper_pct),
+            value=float(round(g_input_default, 1)),
+            step=0.5,
+            format="%.1f",
+            key=f"g_user_{ticker}",
+            label_visibility="collapsed",
+        )
+
+        # Recalculate DDM with user-entered g
+        g_eff = min(max(g_user / 100.0, 0.02), max(rf - 0.03, 0.02))
+        ke_f  = (ke_val / 100.0) if ke_val else (rf + erp)
+
+        if d0_val and d0_val > 0 and ke_f > g_eff:
+            fair_user = round(d0_val * (1 + g_eff) / (ke_f - g_eff), 2)
+            up_user   = round((fair_user / price_val - 1) * 100, 1) if price_val else None
+        else:
+            fair_user = None
+            up_user   = None
+
+        rcols[6].markdown(
+            f"<div style='font-family:IBM Plex Mono,monospace; font-size:0.82rem; "
+            f"color:#a0c8e0; padding-top:8px;'>"
+            f"{f"%{ke_val:.1f}" if ke_val else "—"}</div>",
+            unsafe_allow_html=True)
+
+        fair_color = "#00e676" if (fair_user and price_val and fair_user > price_val) else "#ff5252"
+        rcols[7].markdown(
+            f"<div style='font-family:IBM Plex Mono,monospace; font-size:0.88rem; "
+            f"font-weight:600; color:{fair_color}; padding-top:8px;'>"
+            f"{f"{fair_user:,.1f} TL" if fair_user else "—"}</div>",
+            unsafe_allow_html=True)
+
+        rcols[8].markdown(
+            f"<div style='font-family:IBM Plex Mono,monospace; font-size:0.82rem; "
+            f"color:#e8f4ff; padding-top:8px;'>"
+            f"{f"{price_val:,.1f} TL" if price_val else "—"}</div>",
+            unsafe_allow_html=True)
+
+        if up_user is not None:
+            up_color = "#00e676" if up_user >= 0 else "#ff5252"
+            up_text  = f"%{up_user:+.1f}"
+        else:
+            up_color = "#6a9ec0"
+            up_text  = "g≥Ke" if d0_val else "Veri yok"
+        rcols[9].markdown(
+            f"<div style='font-family:IBM Plex Mono,monospace; font-size:0.88rem; "
+            f"font-weight:600; color:{up_color}; padding-top:8px;'>{up_text}</div>",
+            unsafe_allow_html=True)
+
+        st.markdown("<hr style='border:none; border-top:1px solid #0d1e30; margin:1px 0;'>",
+                    unsafe_allow_html=True)
+
+    st.markdown("""
+    <div style="background:#0a0f1a; border:1px solid #1a3a5c; border-radius:4px; padding:8px 14px; margin-top:6px;">
+      <span style="font-family:'IBM Plex Mono',monospace; font-size:0.70rem; color:#4a7a9b;">
+        <b style="color:#5ab4e0;">g_hist</b>: tarihsel temettü CAGR (2 yıl tercihli, 1 yıl fallback) — hesaplamada kullanılan varsayılan &nbsp;|&nbsp;
+        <b style="color:#00e676;">ROIC</b>: EBIT×(1−%%25)/(PiyasaDeğ+NetBorç) — referans bilgi &nbsp;|&nbsp;
+        <b style="color:#ff5252;">⚠ g ≥ Ke</b> olduğunda DDM çalışmaz — Ke = %{:.1f}–{:.1f}%% aralığında
+      </span>
+    </div>
+    """.format(
+        round((rf + 0.1 * erp) * 100, 1),
+        round((rf + 1.5 * erp) * 100, 1)
+    ), unsafe_allow_html=True)
 
 
-# ══════════════════════════════════════════════
 # TAB 3 — FINANCIAL RATIOS
 # ══════════════════════════════════════════════
 with tab3:
@@ -1328,8 +1340,6 @@ st.markdown("""
     Veri: Yahoo Finance • Beta: BIST-100 (XU100.IS) bazlı, 2 yıllık haftalık getirilerden hesaplanmıştır • DDM: Gordon Growth Model • Yatırım tavsiyesi değildir • 2025
 </div>
 """, unsafe_allow_html=True)
-
-
 
 
 
