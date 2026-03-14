@@ -311,12 +311,78 @@ def fetch_all(tickers_list):
                 yf_yield = (info.get("trailingAnnualDividendYield") or 0) * 100
                 div_yield = round(yf_yield, 2)
 
+            # ── ROIC bileşenleri: financials + balance_sheet tablolarından çek ──
+            # info.get("ebit") vb. .IS hisseleri için çoğunlukla None döner.
+            # yf.Ticker.financials  → gelir tablosu (satır = kalem, sütun = dönem)
+            # yf.Ticker.balance_sheet → bilanço
+
+            def _latest(df_table, *candidates):
+                """En son dönem sütunundan ilk bulduğu kalemi döndür."""
+                if df_table is None or df_table.empty:
+                    return None
+                # Sütunları tarihe göre sırala (en yeni önce)
+                cols_sorted = sorted(df_table.columns, reverse=True)
+                for cand in candidates:
+                    for col in cols_sorted:
+                        try:
+                            idx_matches = [i for i in df_table.index
+                                           if cand.lower() in str(i).lower()]
+                            if idx_matches:
+                                val = df_table.loc[idx_matches[0], col]
+                                if val is not None and not (isinstance(val, float) and np.isnan(val)):
+                                    return float(val)
+                        except Exception:
+                            continue
+                return None
+
+            try:
+                fin   = stk.financials        # gelir tablosu
+                bs    = stk.balance_sheet      # bilanço
+            except Exception:
+                fin = bs = None
+
+            # EBIT — önce info'dan, yoksa financials'tan
+            ebit = info.get("ebit") or _latest(
+                fin,
+                "EBIT", "Ebit", "Operating Income", "OperatingIncome",
+                "Faaliyet Karı", "Operating Profit"
+            )
+
+            # Net borç bileşenleri
+            total_debt = info.get("totalDebt") or _latest(
+                bs,
+                "Total Debt", "TotalDebt", "Long Term Debt", "LongTermDebt",
+                "Short Long Term Debt", "Total Long Term Debt",
+                "Toplam Finansal Borç", "Finansal Borçlar"
+            )
+            total_cash = info.get("totalCash") or _latest(
+                bs,
+                "Cash And Cash Equivalents", "CashAndCashEquivalents",
+                "Cash", "Nakit", "Cash Financial",
+                "Cash Cash Equivalents And Short Term Investments"
+            )
+
+            # Net gelir
+            net_income = info.get("netIncomeToCommon") or _latest(
+                fin,
+                "Net Income", "NetIncome", "Net Income Common Stockholders",
+                "Net Income Applicable To Common Shares",
+                "Net Profit", "Dönem Net Karı"
+            )
+
+            mkt_cap = info.get("marketCap")
+            # Piyasa değeri yoksa fiyat × yaklaşık hisse sayısından tahmin et
+            if not mkt_cap and price:
+                shares_out = info.get("sharesOutstanding") or info.get("impliedSharesOutstanding")
+                if shares_out:
+                    mkt_cap = price * shares_out
+
             rows.append({
                 "Ticker":        t,
                 "Şirket":        (info.get("longName") or t)[:28],
                 "Fiyat":         price,
                 "RSI (14)":      rsi,
-                "Temettü V. %":  div_yield,           # calculated: trailing_12m / price
+                "Temettü V. %":  div_yield,
                 "Yıllık Tem.":   round(float(annual_div_rate), 3),
                 "Tem. 2022":     annual_divs.get(2022),
                 "Tem. 2023":     annual_divs.get(2023),
@@ -331,14 +397,14 @@ def fetch_all(tickers_list):
                 "FAVÖK Marjı %": round((info.get("ebitdaMargins") or 0) * 100, 2),
                 "Borç/Özkaynak": round(info.get("debtToEquity") or 0, 2),
                 "Cari Oran":     round(info.get("currentRatio") or 0, 2),
-                # ── ROIC bileşenleri ──
-                "_ebit":         info.get("ebit"),
-                "_totalDebt":    info.get("totalDebt"),
-                "_totalCash":    info.get("totalCash"),
-                "_netIncome":    info.get("netIncomeToCommon"),
-                "_marketCap":    info.get("marketCap"),
+                # ── ROIC bileşenleri (financials/balance_sheet'ten) ──
+                "_ebit":         ebit,
+                "_totalDebt":    total_debt,
+                "_totalCash":    total_cash,
+                "_netIncome":    net_income,
+                "_marketCap":    mkt_cap,
                 "Beta (BIST-100)": bist_beta,
-                "Piy. Değ. (Mn TL)": round((info.get("marketCap") or 0) / 1e6, 0),
+                "Piy. Değ. (Mn TL)": round((mkt_cap or 0) / 1e6, 0),
                 "Sektör":        info.get("sector", "—"),
             })
         except Exception as e:
@@ -1207,6 +1273,7 @@ st.markdown("""
     Veri: Yahoo Finance • Beta: BIST-100 (XU100.IS) bazlı, 2 yıllık haftalık getirilerden hesaplanmıştır • DDM: Gordon Growth Model • Yatırım tavsiyesi değildir • 2025
 </div>
 """, unsafe_allow_html=True)
+
 
 
 
