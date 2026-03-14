@@ -905,7 +905,9 @@ Bloomberg ve Merrill Lynch standart yöntemi — beta'yı piyasa ortalaması 1.0
         price_val  = row.get("Mevcut Fiyat")
 
         # Default = g_hist; fallback to sidebar default
-        g_input_default = float(g_hist_val) if g_hist_val is not None else round(g_default * 100, 1)
+        # MUST be clamped to [0, cap_upper_pct] — Streamlit raises error if value > max_value
+        raw_default = float(g_hist_val) if g_hist_val is not None else round(g_default * 100, 1)
+        g_input_default = min(max(round(raw_default, 1), 0.0), cap_upper_pct)
 
         rcols = st.columns([1.1, 1.5, 0.75, 0.85, 0.85, 0.95, 0.85, 1.1, 1.0, 1.0])
 
@@ -1340,6 +1342,11 @@ st.markdown("""
     Veri: Yahoo Finance • Beta: BIST-100 (XU100.IS) bazlı, 2 yıllık haftalık getirilerden hesaplanmıştır • DDM: Gordon Growth Model • Yatırım tavsiyesi değildir • 2025
 </div>
 """, unsafe_allow_html=True)
+
+
+
+
+
 
 
 
