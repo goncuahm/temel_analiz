@@ -224,10 +224,14 @@ def fetch_bist100_returns():
         return None
 
 
+TAX_RATE = 0.25   # Türkiye kurumlar vergisi oranı
+
 def calc_bist_beta(stock_hist, market_returns):
     """
-    Calculate beta of a stock vs BIST-100 using 2-year weekly returns.
-    β = Cov(stock, market) / Var(market)
+    Raw beta vs BIST-100: Cov(stock, market) / Var(market)
+    Then apply Blume adjustment toward 1.0:
+        β_adj = 0.67 × β_raw + 0.33 × 1.0
+    This is standard practice (Merrill Lynch / Bloomberg default).
     Falls back to 1.0 if data is insufficient.
     """
     if market_returns is None or stock_hist is None or stock_hist.empty:
@@ -235,7 +239,6 @@ def calc_bist_beta(stock_hist, market_returns):
     try:
         weekly_stock = stock_hist["Close"].resample("W").last().dropna()
         stock_ret = weekly_stock.pct_change().dropna()
-        # Align on common dates
         combined = pd.concat([stock_ret, market_returns], axis=1, join="inner").dropna()
         if len(combined) < 20:
             return 1.0
@@ -244,11 +247,177 @@ def calc_bist_beta(stock_hist, market_returns):
         var = combined["market"].var()
         if var == 0:
             return 1.0
-        beta = round(cov / var, 3)
-        # Sanity clamp: beta outside [-1, 4] is almost certainly data noise
-        return max(-1.0, min(beta, 4.0))
+        beta_raw = cov / var
+        # Blume adjustment: regresses toward market average of 1.0
+        beta_adj = 0.67 * beta_raw + 0.33 * 1.0
+        # Sanity clamp
+        return round(max(0.1, min(beta_adj, 3.0)), 3)
     except Exception:
         return 1.0
+
+
+def calc_roic(row):
+    """
+    ROIC = NOPAT / Invested Capital
+    NOPAT = EBIT × (1 − tax_rate)
+    Invested Capital = MarketCap + NetDebt
+
+    Fallback chain when EBIT/debt not available from financials:
+      → Approximate via ROA: ROIC ≈ ROA × (1 + D/E ratio normalised)
+        Because ROA = NetIncome / TotalAssets and
+        ROIC ≈ ROA adjusted for leverage structure.
+    """
+    ebit       = row.get("_ebit")
+    total_debt = row.get("_totalDebt")
+    total_cash = row.get("_totalCash")
+    mkt_cap    = row.get("_marketCap")
+
+    detail = {"ROIC %": None, "ROIC Yöntemi": None}
+
+    # ── Method 1: Full ROIC from financials ──
+    if all(v is not None for v in [ebit, total_debt, total_cash, mkt_cap]) and mkt_cap > 0:
+        nopat        = ebit * (1 - TAX_RATE)
+        net_debt     = max(total_debt - total_cash, 0)
+        invested_cap = mkt_cap + net_debt
+        if invested_cap > 0:
+            roic = nopat / invested_cap
+            detail["ROIC %"]       = round(roic * 100, 2)
+            detail["ROIC Yöntemi"] = "EBIT/Yatırılan Sermaye"
+            return roic, detail
+
+    # ── Method 2: ROA-based approximation ──
+    # ROIC ≈ ROA × (TotalAssets / InvestedCapital)
+    # Since InvestedCapital ≈ TotalAssets − CurrentLiabilities
+    # and we don't have TotalAssets, we use:
+    # ROIC ≈ ROA × (1 + D/E) as a leverage-adjusted proxy
+    roa = row.get("ROA %")
+    de  = row.get("Borç/Özkaynak")   # already as ratio (e.g. 85.3 means 0.853)
+    if roa is not None and roa != 0 and de is not None:
+        # de from Yahoo is in percentage form (debtToEquity * 100)
+        de_ratio = de / 100.0
+        # ROIC proxy: ROA grossed up by capital structure
+        roic_proxy = (roa / 100.0) * (1 + de_ratio) * (1 - TAX_RATE)
+        if roic_proxy > 0:
+            detail["ROIC %"]       = round(roic_proxy * 100, 2)
+            detail["ROIC Yöntemi"] = "ROA × Kaldıraç (yaklaşık)"
+            return roic_proxy, detail
+
+    # ── Method 3: ROE-based approximation ──
+    # ROIC ≈ ROE × (Equity / InvestedCapital) = ROE / (1 + NetDebt/Equity)
+    # Simplified: when no debt info, ROIC ≈ ROE × (1 − tax) as floor estimate
+    roe = row.get("ROE %")
+    if roe is not None and roe > 0:
+        roic_proxy = (roe / 100.0) * (1 - TAX_RATE)
+        detail["ROIC %"]       = round(roic_proxy * 100, 2)
+        detail["ROIC Yöntemi"] = "ROE bazlı (yaklaşık)"
+        return roic_proxy, detail
+
+    return None, detail
+
+
+def calc_payout(row):
+    """
+    Payout ratio with fallback chain.
+    Method 1: (annual_div_per_share × shares) / net_income   [exact]
+    Method 2: div_yield / ROE                                 [approximation]
+              Because: DY = D/P, ROE = E/BV, P/BV = PD/DD
+              Payout ≈ DY × (P/E) = DY / EPS_yield
+    Method 3: div_yield / (1/PE) = DY × PE                   [from P/E]
+    Returns payout as float 0-1, or None.
+    """
+    # Method 1 — exact
+    net_income = row.get("_netIncome")
+    annual_div = row.get("Yıllık Tem.", 0) or 0
+    mkt_cap    = row.get("_marketCap")
+    price      = row.get("Fiyat")
+
+    if annual_div > 0 and net_income and net_income > 0 and mkt_cap and price and price > 0:
+        shares = mkt_cap / price
+        total_divs = annual_div * shares
+        payout = min(total_divs / net_income, 1.0)
+        if payout > 0:
+            return round(payout, 4), "Net Kâr / Temettü"
+
+    # Method 2 — DY × P/E approximation
+    # Payout = DPS/EPS = (DPS/P) × (P/EPS) = DY × PE
+    dy  = row.get("Temettü V. %")
+    pe  = row.get("F/K")
+    if dy and dy > 0 and pe and pe > 0:
+        payout = min((dy / 100.0) * pe, 1.0)
+        if payout > 0:
+            return round(payout, 4), "Temettü V. × F/K (yaklaşık)"
+
+    return None, None
+
+
+def calc_g(row, g_default, rf):
+    """
+    g = 0.50 × g_roic + 0.50 × g_hist   (equal weight blend)
+
+    g_roic = ROIC × (1 - payout)
+             payout missing → assume 50% (industry convention)
+    g_hist = longest available dividend CAGR (2yr preferred, 1yr fallback)
+
+    Fallback hierarchy:
+      Both available → 50/50 blend
+      Only g_roic    → g_roic alone
+      Only g_hist    → g_hist alone
+      Neither        → sidebar default
+
+    Cap: max(2%, min(g, Rf - 3%))
+    """
+    cap_upper = max(rf - 0.03, 0.02)
+    cap_lower = 0.02
+
+    detail = {"g_roic": None, "g_hist": None, "Payout": None,
+              "ROIC %": None, "ROIC Yöntemi": None, "Payout Yöntemi": None}
+
+    # g_roic: ROIC x (1 - payout)
+    roic, roic_detail = calc_roic(row)
+    detail["ROIC %"]       = roic_detail.get("ROIC %")
+    detail["ROIC Yöntemi"] = roic_detail.get("ROIC Yöntemi")
+
+    g_roic = None
+    if roic is not None and roic > 0:
+        payout, pay_method = calc_payout(row)
+        if payout is None:
+            payout     = 0.50
+            pay_method = "%50 varsayılan"
+        detail["Payout"]         = round(payout * 100, 1)
+        detail["Payout Yöntemi"] = pay_method
+        reinvestment = 1 - payout
+        g_roic       = roic * reinvestment
+        detail["g_roic"] = round(g_roic * 100, 2)
+
+    # g_hist: longest available dividend CAGR
+    g_hist = None
+    div_pairs = [
+        (row.get("Tem. 2024"), row.get("Tem. 2022"), 2),
+        (row.get("Tem. 2024"), row.get("Tem. 2023"), 1),
+        (row.get("Tem. 2023"), row.get("Tem. 2022"), 1),
+    ]
+    for d_end, d_start, yrs in div_pairs:
+        if pd.notna(d_end) and pd.notna(d_start) and d_end > 0 and d_start > 0:
+            g_hist = (d_end / d_start) ** (1 / yrs) - 1
+            detail["g_hist"] = round(g_hist * 100, 2)
+            break
+
+    # Equal-weight 50/50 blend
+    if g_roic is not None and g_hist is not None:
+        g_blend = 0.50 * g_roic + 0.50 * g_hist
+        source  = f"ROIC(50%) + Hist.CAGR(50%) [{detail['ROIC Yöntemi']}]"
+    elif g_roic is not None:
+        g_blend = g_roic
+        source  = f"Sadece ROIC [{detail['ROIC Yöntemi']}]"
+    elif g_hist is not None:
+        g_blend = g_hist
+        source  = "Sadece Tarihsel CAGR"
+    else:
+        g_blend = g_default
+        source  = "Varsayılan (sidebar)"
+
+    g_final = min(max(g_blend, cap_lower), cap_upper)
+    return g_final, source, detail
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -440,120 +609,6 @@ if valid.empty:
     st.error("Hiçbir hisse için veri alınamadı. Kodları kontrol edin.")
     st.stop()
 
-# ─────────────────────────────────────────────
-# g ESTIMATION — ROIC × Reinvestment Rate blended with historical CAGR
-# ─────────────────────────────────────────────
-TAX_RATE = 0.25   # Turkish corporate tax rate
-
-def calc_roic(row):
-    """
-    ROIC = NOPAT / Invested Capital
-    NOPAT  = EBIT × (1 − tax_rate)
-    Invested Capital = Market Cap + Net Debt  (net debt = total debt − cash)
-    Returns (roic, detail_dict) or (None, detail_dict) if data unavailable.
-    """
-    ebit       = row.get("_ebit")
-    total_debt = row.get("_totalDebt")
-    total_cash = row.get("_totalCash")
-    mkt_cap    = row.get("_marketCap")
-
-    detail = {"EBIT": ebit, "Net Borç": None, "Yatırılan Sermaye": None, "ROIC %": None}
-
-    if not all(v is not None for v in [ebit, total_debt, total_cash, mkt_cap]):
-        return None, detail
-    if mkt_cap <= 0:
-        return None, detail
-
-    nopat          = ebit * (1 - TAX_RATE)
-    net_debt       = max(total_debt - total_cash, 0)   # floor at 0
-    invested_cap   = mkt_cap + net_debt
-    if invested_cap <= 0:
-        return None, detail
-
-    roic = nopat / invested_cap
-    detail["Net Borç"]           = round(net_debt / 1e6, 0)
-    detail["Yatırılan Sermaye"]  = round(invested_cap / 1e6, 0)
-    detail["ROIC %"]             = round(roic * 100, 2)
-    return roic, detail
-
-
-def calc_g(row, g_default, rf):
-    """
-    Priority 1 — ROIC × (1 − payout_ratio)   [fundamental anchor]
-    Priority 2 — Historical dividend CAGR       [reality check, 3-5 yr]
-    Blend: 0.60 × g_roic + 0.40 × g_hist when both available
-    Cap:   max(2%, min(g_blend, Rf − 3%))
-    Returns (g, source_label, detail_dict)
-    """
-    cap_upper = max(rf - 0.03, 0.02)   # e.g. 25% when Rf=28%
-    cap_lower = 0.02
-
-    detail = {"g_roic": None, "g_hist": None, "Payout": None, "ROIC %": None}
-
-    # ── Priority 1: ROIC × (1 − payout) ──
-    roic, roic_detail = calc_roic(row)
-    detail["ROIC %"] = roic_detail.get("ROIC %")
-
-    g_roic = None
-    if roic is not None and roic > 0:
-        # Payout ratio = trailing dividends / net income
-        net_income  = row.get("_netIncome")
-        annual_div  = row.get("Yıllık Tem.", 0) or 0
-        mkt_cap     = row.get("_marketCap")
-        shares = None
-        price  = row.get("Fiyat")
-
-        # Approximate total dividends paid = annual_div_per_share × shares
-        # shares ≈ market_cap / price
-        total_divs_paid = None
-        if price and price > 0 and mkt_cap and mkt_cap > 0:
-            shares = mkt_cap / price
-            total_divs_paid = annual_div * shares
-
-        payout = None
-        if (total_divs_paid and net_income and
-                net_income > 0 and total_divs_paid > 0):
-            payout = min(total_divs_paid / net_income, 1.0)   # cap at 100%
-
-        if payout is not None:
-            reinvestment_rate = 1 - payout
-            g_roic = roic * reinvestment_rate
-            detail["Payout"] = round(payout * 100, 1)
-            detail["g_roic"] = round(g_roic * 100, 2)
-
-    # ── Priority 2: Historical dividend CAGR (up to 5-year window) ──
-    g_hist = None
-    div_pairs = [
-        (row.get("Tem. 2024"), row.get("Tem. 2022"), 2),   # 2-yr CAGR
-        (row.get("Tem. 2024"), row.get("Tem. 2023"), 1),   # 1-yr
-        (row.get("Tem. 2023"), row.get("Tem. 2022"), 1),   # 1-yr fallback
-    ]
-    for d_end, d_start, yrs in div_pairs:
-        if (pd.notna(d_end) and pd.notna(d_start)
-                and d_end > 0 and d_start > 0):
-            g_hist = (d_end / d_start) ** (1 / yrs) - 1
-            detail["g_hist"] = round(g_hist * 100, 2)
-            break
-
-    # ── Blend ──
-    if g_roic is not None and g_hist is not None:
-        g_blend = 0.60 * g_roic + 0.40 * g_hist
-        source  = "ROIC×Reinv.(60%) + Hist.CAGR(40%)"
-    elif g_roic is not None:
-        g_blend = g_roic
-        source  = "ROIC × Reinvestment Rate"
-    elif g_hist is not None:
-        g_blend = g_hist
-        source  = "Tarihsel Temettü CAGR"
-    else:
-        g_blend = g_default
-        source  = "Varsayılan (sidebar)"
-
-    g_final = min(max(g_blend, cap_lower), cap_upper)
-    return g_final, source, detail
-
-
-# ─────────────────────────────────────────────
 # DDM CALCULATION
 # ─────────────────────────────────────────────
 def calc_ddm(row, rf, erp, g_default):
@@ -597,7 +652,7 @@ for ticker, row in valid.iterrows():
         "ROIC %":          g_detail.get("ROIC %"),
         "Payout %":        g_detail.get("Payout"),
         "g_roic %":        g_detail.get("g_roic"),
-        "g_hist %":        g_detail.get("g_hist"),
+        "g_hist %":  g_detail.get("g_hist"),
         "Ke (%)":          ke,
         "DDM Adil Değer":  fair,
         "Mevcut Fiyat":    price,
@@ -792,10 +847,10 @@ Temel fikir şudur: bir hissenin değeri, gelecekte ödeyeceği tüm temettüler
 |--------|-----|----------------------------------|
 | **D₀** | Son ödenen temettü | Yahoo Finance temettü geçmişinden alınır. Öncelik sırası: 2024 → 2023 → 2022 → son 12 ay toplamı |
 | **D₁** | Beklenen bir sonraki yıl temettüsü | D₁ = D₀ × (1 + g) |
-| **g** | Uzun vadeli temettü büyüme oranı | **Öncelik 1 — ROIC × (1 − Payout):** ROIC = EBIT×(1−%25) / (PiyasaDeğeri + NetBorç). Payout = yıllık temettü / net kar. Bu iki bileşenin çarpımı g_roic'i verir. **Blending:** g_roic'e %60, tarihsel temettü CAGR'ına %40 ağırlık verilir (her ikisi mevcutsa). **Cap:** min(max(g, %2), Rf−3%). Yöntem her hisse için tablo sütununda gösterilir. |
+| **g** | Uzun vadeli temettü büyüme oranı | **g = 0.50 × g_roic + 0.50 × g_hist** — eşit ağırlıklı blend. g_roic = ROIC × (1−Payout), payout bilinmiyorsa %50 varsayılır. g_hist = mevcut en uzun temettü CAGR (2 yıl tercihli). Her ikisi de tabloda ayrı ayrı gösterilir. Sadece biri varsa o kullanılır; hiçbiri yoksa sidebar varsayılanı. **Cap:** min(max(g, %2), Rf−3%). |
 | **Ke** | Öz sermaye maliyeti (iskonto oranı) | CAPM formülüyle: **Ke = Rf + β × ERP** |
 | **Rf** | Risksiz oran | Türkiye 10 yıllık TL devlet tahvili getirisi. Sidebar'dan ayarlanabilir (varsayılan %28). |
-| **β (Beta)** | Sistematik risk katsayısı | **BIST-100'e (XU100.IS) karşı hesaplanır** — 2 yıllık haftalık getirilerden Cov(hisse, BIST-100) / Var(BIST-100) formülüyle. Yahoo'nun verdiği beta S&P 500 bazlıdır, Türk hisseleri için hatalı olur. |
+| **β (Beta)** | Sistematik risk katsayısı | **BIST-100'e (XU100.IS) karşı hesaplanır** — 2 yıllık haftalık getirilerden β_raw = Cov(hisse, BIST-100) / Var(BIST-100). Ardından **Blume düzeltmesi** uygulanır: β_adj = 0.67 × β_raw + 0.33 × 1.0 — bu Bloomberg ve Merrill Lynch'in standart yaklaşımıdır; beta'yı piyasa ortalaması olan 1.0'a doğru çeker çünkü şirketler zamanla sistematik riske yakınsar. Yahoo'nun verdiği beta S&P 500 bazlıdır, Türk hisseleri için kullanılamaz. |
 | **ERP** | Piyasa risk primi | Beklenen piyasa getirisi eksi risksiz oran. Damodaran'ın Türkiye ERP tahmini baz alınır. Sidebar'dan ayarlanabilir (varsayılan %9). |
 
 ---
@@ -932,8 +987,8 @@ Temel fikir şudur: bir hissenin değeri, gelecekte ödeyeceği tüm temettüler
     <div style="background:#0a0f1a; border:1px solid #1a3a5c; border-radius:4px; padding:10px 14px; margin-top:12px;">
         <span style="font-family:'IBM Plex Mono',monospace; font-size:0.72rem; color:#4a7a9b;">
         <b style="color:#5ab4e0;">g hesaplama:</b>
-        Önce ROIC × (1 − Payout) hesaplanır [%60 ağırlık].
-        Tarihsel temettü CAGR mevcutsa blende eklenir [%40 ağırlık].
+        g = 0.50 × g_roic + 0.50 × g_hist — eşit ağırlıklı blend.
+        g_roic = ROIC × (1−Payout), payout yoksa %50 varsayılır.
         Sonuç: min(max(g, %2), Rf−3%) ile sınırlandırılır.
         &nbsp;|&nbsp;
         <b style="color:#5ab4e0;">ROIC</b> = EBIT×(1−%25) / (PiyasaDeğeri + NetBorç)
