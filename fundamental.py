@@ -964,26 +964,26 @@ Bloomberg ve Merrill Lynch standart yöntemi — beta'yı piyasa ortalaması 1.0
             f"color:#6a9ec0; padding-top:8px;'>{sirket}</div>",
             unsafe_allow_html=True)
 
+        d0_txt = "%.3f" % d0_val if d0_val else "---"
         rcols[2].markdown(
-            f"<div style='font-family:IBM Plex Mono,monospace; font-size:0.82rem; "
-            f"color:#e8f4ff; padding-top:8px;'>"
-            ("%.3f" % d0_val if d0_val else "---") + "</div>",
+            "<div style='font-family:IBM Plex Mono,monospace; font-size:0.82rem; "
+            "color:#e8f4ff; padding-top:8px;'>" + d0_txt + "</div>",
             unsafe_allow_html=True)
 
-        # ROIC — reference, green if available
+        # ROIC -- reference, green if available
         roic_color = "#00e676" if g_roic_val else "#3a5a6a"
+        roic_txt   = "%.1f%%" % g_roic_val if g_roic_val else "---"
         rcols[3].markdown(
-            f"<div style='font-family:IBM Plex Mono,monospace; font-size:0.82rem; "
-            f"color:{roic_color}; padding-top:8px;'>"
-            ("%.1f%%" % g_roic_val if g_roic_val else "---") + "</div>",
+            "<div style='font-family:IBM Plex Mono,monospace; font-size:0.82rem; "
+            "color:" + roic_color + "; padding-top:8px;'>" + roic_txt + "</div>",
             unsafe_allow_html=True)
 
-        # g_hist — default value, highlighted blue
+        # g_hist -- default value, highlighted blue
         hist_color = "#5ab4e0" if g_hist_val is not None else "#3a5a6a"
+        hist_txt   = "%.1f%%" % g_hist_val if g_hist_val is not None else "---"
         rcols[4].markdown(
-            f"<div style='font-family:IBM Plex Mono,monospace; font-size:0.82rem; "
-            f"color:{hist_color}; padding-top:8px; font-weight:600;'>"
-            ("%.1f%%" % g_hist_val if g_hist_val is not None else "---") + "</div>",
+            "<div style='font-family:IBM Plex Mono,monospace; font-size:0.82rem; "
+            "color:" + hist_color + "; padding-top:8px; font-weight:600;'>" + hist_txt + "</div>",
             unsafe_allow_html=True)
 
         # Editable g input -- defaults to g_hist
